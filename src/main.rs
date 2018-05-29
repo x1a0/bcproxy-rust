@@ -7,7 +7,7 @@ use std::env;
 use std::net::{SocketAddr, Shutdown};
 use std::io::{self, Read, Write};
 
-use tokio::io::{copy, shutdown};
+use tokio::io::{copy, write_all, shutdown};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
 
@@ -36,6 +36,8 @@ fn main() {
                 let bat_reader = ProxyTcpStream(Arc::new(Mutex::new(bat)));
                 let bat_writer = bat_reader.clone();
 
+                let bc_mode = write_all(bat_writer.clone(),  [0x1b, b'b', b'c', b' ', b'1', b'\n']);
+
                 let client_to_bat = copy(client_reader, bat_writer)
                     .and_then(|(n, _, bat_writer)| {
                         shutdown(bat_writer).map(move |_| n)
@@ -46,7 +48,7 @@ fn main() {
                         shutdown(client_writer).map(move |_| n)
                     });
 
-                client_to_bat.join(bat_to_client)
+                bc_mode.and_then(|_| client_to_bat.join(bat_to_client))
             });
 
             let msg = amounts.map(|(from_client, from_bat)| {
