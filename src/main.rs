@@ -1,15 +1,21 @@
 #[macro_use] extern crate log;
 extern crate env_logger;
 extern crate tokio;
+extern crate tokio_io;
+extern crate futures;
+extern crate bytes;
 
 use std::sync::{Arc, Mutex};
 use std::env;
-use std::net::{SocketAddr, Shutdown};
-use std::io::{self, Read, Write};
+use std::net::SocketAddr;
 
 use tokio::io::{copy, write_all, shutdown};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
+
+mod net;
+mod codec;
+mod color;
 
 fn main() {
     env_logger::init();
@@ -31,9 +37,9 @@ fn main() {
             info!("Connecting to: {}", bat_addr);
 
             let amounts = bat.and_then(move |bat| {
-                let client_reader = ProxyTcpStream(Arc::new(Mutex::new(client)));
+                let client_reader = net::ProxyTcpStream(Arc::new(Mutex::new(client)));
                 let client_writer = client_reader.clone();
-                let bat_reader = ProxyTcpStream(Arc::new(Mutex::new(bat)));
+                let bat_reader = net::ProxyTcpStream(Arc::new(Mutex::new(bat)));
                 let bat_writer = bat_reader.clone();
 
                 let bc_mode = write_all(bat_writer.clone(),  [0x1b, b'b', b'c', b' ', b'1', b'\n']);
@@ -43,8 +49,13 @@ fn main() {
                         shutdown(bat_writer).map(move |_| n)
                     });
 
-                let bat_to_client = copy(bat_reader, client_writer)
-                    .and_then(|(n, _, client_writer)| {
+                let mut client_writer_mut = client_writer.clone();
+                let bat_to_client = bat_reader.framed(codec::BatCodec::new())
+                    .and_then(move |bytes| {
+                        client_writer_mut.write(&bytes[..])
+                    })
+                    .fold(0usize, |acc, x| future::ok::<_, tokio::io::Error>(acc + x))
+                    .and_then(move |n| {
                         shutdown(client_writer).map(move |_| n)
                     });
 
@@ -64,32 +75,4 @@ fn main() {
         });
 
     tokio::run(done);
-}
-
-#[derive(Clone)]
-struct ProxyTcpStream(Arc<Mutex<TcpStream>>);
-
-impl Read for ProxyTcpStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().read(buf)
-    }
-}
-
-impl Write for ProxyTcpStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl AsyncRead for ProxyTcpStream {}
-
-impl AsyncWrite for ProxyTcpStream {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        try!(self.0.lock().unwrap().shutdown(Shutdown::Write));
-        Ok(().into())
-    }
 }

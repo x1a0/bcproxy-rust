@@ -7,3 +7,6 @@ authors = ["x1a0 <zhangxiao@xzhang.net>"]
 log = "0.4"
 env_logger = "0.5"
 tokio = "0.1"
+tokio-io = "0.1"
+futures = "0.2"
+bytes = "0.4"
