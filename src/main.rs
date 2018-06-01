@@ -16,6 +16,9 @@ use tokio::prelude::*;
 mod net;
 mod codec;
 mod color;
+mod protocol;
+
+use codec::*;
 
 fn main() {
     env_logger::init();
@@ -50,9 +53,13 @@ fn main() {
                     });
 
                 let mut client_writer_mut = client_writer.clone();
-                let bat_to_client = bat_reader.framed(codec::BatCodec::new())
-                    .and_then(move |bytes| {
-                        client_writer_mut.write(&bytes[..])
+                let bat_to_client = bat_reader.framed(BatCodec::new())
+                    .and_then(move |frame| {
+                        match frame {
+                            BatFrame::Bytes(bytes) => client_writer_mut.write(&bytes[..]),
+                            BatFrame::Code(code) => client_writer_mut.write(&code.to_bytes()[..]),
+                            BatFrame::Nothing => client_writer_mut.write(&[][..]),
+                        }
                     })
                     .fold(0usize, |acc, x| future::ok::<_, tokio::io::Error>(acc + x))
                     .and_then(move |n| {

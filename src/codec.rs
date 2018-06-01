@@ -3,9 +3,8 @@ use std::{io, fmt};
 use bytes::{Bytes, BufMut, BytesMut};
 use tokio_io::codec::{Encoder, Decoder};
 
-use super::color::rgb_to_xterm;
+use super::protocol::ControlCode;
 
-/// Batmud BC mode codec
 #[derive(Debug)]
 pub struct BatCodec {
     state: State,
@@ -19,25 +18,6 @@ enum State {
     Esc,
     Open(Option<u8>, Option<u8>),
     Close(Option<u8>, Option<u8>),
-}
-
-#[derive(Clone, Debug)]
-pub struct ControlCode {
-    id: (u8, u8),
-    attr: BytesMut,
-    body: BytesMut,
-    parent: Option<Box<ControlCode>>,
-}
-
-impl ControlCode {
-    fn new(id: (u8, u8), parent: Option<ControlCode>) -> ControlCode {
-        ControlCode {
-            id: id,
-            attr: BytesMut::new(),
-            body: BytesMut::new(),
-            parent: parent.map(Box::new),
-        }
-    }
 }
 
 impl fmt::Display for State {
@@ -55,35 +35,11 @@ impl fmt::Display for State {
     }
 }
 
-fn u8_to_chars(mut x: u8) -> BytesMut {
-    let mut bytes = BytesMut::with_capacity(3);
-    while x >= 10 {
-        bytes.put(x % 10 + b'0');
-        x = x / 10;
-    }
-    bytes.put(x + b'0');
-    bytes.reverse();
-    bytes
-}
-
-fn relay_info_prefix<'a>((c1, c2): (u8, u8)) -> &'a[u8] {
-    match (c1, c2) {
-        (b'4', b'1') => &b"[player_spell_action_status] "[..],
-        (b'4', b'2') => &b"[player_skill_action_status] "[..],
-        (b'5', b'0') => &b"[player_full_health_status] "[..],
-        (b'5', b'1') => &b"[player_partial_health_status] "[..],
-        (b'5', b'2') => &b"[player_info] "[..],
-        (b'5', b'3') => &b"[player_free_exp] "[..],
-        (b'5', b'4') => &b"[player_status] "[..],
-        (b'6', b'0') => &b"[player_location] "[..],
-        (b'6', b'1') => &b"[player_party_position] "[..],
-        (b'6', b'2') => &b"[party_player_status] "[..],
-        (b'6', b'3') => &b"[party_player_left] "[..],
-        (b'6', b'4') => &b"[player_effect] "[..],
-        (b'7', b'0') => &b"[player_target] "[..],
-        (b'9', b'9') => &b"[custom_info] "[..],
-        _            => &b"[unspecified] "[..],
-    }
+#[derive(Debug)]
+pub enum BatFrame {
+    Bytes(BytesMut),
+    Code(Box<ControlCode>),
+    Nothing,
 }
 
 impl BatCodec {
@@ -95,17 +51,21 @@ impl BatCodec {
         }
     }
 
-    fn process(&mut self, bytes: BytesMut) -> Option<BytesMut> {
+    fn process(&mut self, bytes: BytesMut) -> BatFrame {
         match self.code {
             Some(ref mut code) => {
                 code.body.reserve(bytes.len());
                 code.body.put(bytes);
-                Some(BytesMut::new())
+                BatFrame::Nothing
             },
 
-            _ => {
-                Some(bytes)
+            None if bytes.len() > 0 => {
+                BatFrame::Bytes(bytes)
             },
+
+            None => {
+                BatFrame::Nothing
+            }
         }
     }
 
@@ -113,179 +73,6 @@ impl BatCodec {
         let id = self.code.clone().map_or(('-', '-'), |c| (c.id.0 as char, c.id.1 as char));
         debug!("State transition from {} to {}. Current code: {}{}", self.state, state, id.0, id.1);
         self.state = state;
-    }
-
-    fn process_code(&mut self) -> BytesMut {
-        match self.code.clone() {
-            Some(code) => match code.id {
-                (b'0', b'0') => {
-                    // Closes any open control code tags and resets text properties
-                    // ESC<00ESC>00
-                    self.code = None;
-                    BytesMut::from(&"\x1b[0m"[..])
-                },
-
-                (b'0', b'5') => {
-                    // Signifies that the connection was successful
-                    // ESC<05ESC>05
-                    self.code = code.parent;
-                    BytesMut::from(&"[login] OK\n"[..])
-                },
-
-                (b'0', b'6') => {
-                    // Signifies that the connection failed with the reason given as arg
-                    // ESC<06Incorrect password.ESC>06
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(10 + code.body.len());
-                    bytes.put(&b"[login] "[..]);
-                    bytes.put(code.body);
-                    bytes.put(b'\n');
-                    bytes
-                },
-
-                (b'1', b'0') => {
-                    // Defines the output to be a message of type <arg>
-                    // ESC<10chan_salesESC|Test outputESC>10
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(4 + code.attr.len() + code.body.len());
-                    bytes.put(b'[');
-                    bytes.put(code.attr.clone());
-                    bytes.put(&b"] "[..]);
-                    bytes.put(code.body);
-                    bytes.put(b'\n');
-                    bytes
-                },
-
-                (b'1', b'1') => {
-                    // Clears the active screen
-                    // ESC<11ESC>11
-                    self.code = code.parent;
-                    BytesMut::from(&"[clear_screen]\n"[..])
-                },
-
-                (b'2', b'0') => {
-                    // Sets the text foreground color to be the RGB value specified as argument
-                    // ESC<2000FFFFESC|TestESC>20
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(15 + code.body.len());
-                    bytes.put(&b"\x1b[38;5;"[..]);
-                    bytes.put(u8_to_chars(rgb_to_xterm(code.attr.clone())));
-                    bytes.put(b'm');
-                    bytes.put(code.body);
-                    bytes.put(&b"\x1b[0m"[..]);
-                    bytes
-                },
-
-                (b'2', b'1') => {
-                    // Sets the text background color to be the RGB value specified as argument
-                    // ESC<21FF0000ESC|TestESC>21
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(15 + code.body.len());
-                    bytes.put(&b"\x1b[48;5;"[..]);
-                    bytes.put(u8_to_chars(rgb_to_xterm(code.attr.clone())));
-                    bytes.put(b'm');
-                    bytes.put(code.body);
-                    bytes.put(&b"\x1b[0m"[..]);
-                    bytes
-                },
-
-                (b'2', b'2') => {
-                    // Sets the text output to bold mode
-                    // ESC<22TestESC>22
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(8 + code.body.len());
-                    bytes.put(&b"\x1b[1m"[..]);
-                    bytes.put(code.body);
-                    bytes.put(&b"\x1b[0m"[..]);
-                    bytes
-                },
-
-                (b'2', b'3') => {
-                    // Sets the text output in italic
-                    // ESC<23TestESC>23
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(8 + code.body.len());
-                    bytes.put(&b"\x1b[3m"[..]);
-                    bytes.put(code.body);
-                    bytes.put(&b"\x1b[0m"[..]);
-                    bytes
-                },
-
-                (b'2', b'4') => {
-                    // Sets the text output as underlined
-                    // ESC<24TestESC>24
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(8 + code.body.len());
-                    bytes.put(&b"\x1b[4m"[..]);
-                    bytes.put(code.body);
-                    bytes.put(&b"\x1b[0m"[..]);
-                    bytes
-                },
-
-                (b'2', b'5') => {
-                    // Sets the text output to blink
-                    // ESC<25TestESC>25
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(8 + code.body.len());
-                    bytes.put(&b"\x1b[5m"[..]);
-                    bytes.put(code.body);
-                    bytes.put(&b"\x1b[0m"[..]);
-                    bytes
-                },
-
-                (b'2', b'9') => {
-                    // Resets the text properties (reverts back to default colors)
-                    // ESC<29ESC>29
-                    self.code = code.parent.clone();
-                    BytesMut::from(&b"\x1b[0m"[..])
-                },
-
-                (b'3', b'0') => {
-                    // Sets the text to be a hyperlink to the link provides as argument
-                    // ESC<30http://www.bat.orgESC|BatMUD's homepageESC>30
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(4 + code.attr.len() + code.body.len());
-                    bytes.put(b'[');
-                    bytes.put(code.body.clone());
-                    bytes.put(&b"]("[..]);
-                    bytes.put(code.attr);
-                    bytes.put(b')');
-                    bytes
-                },
-
-                (b'3', b'1') => {
-                    // Sets the text to be an in-game link as provided by argument
-                    // ESC<31northESC|Go northESC>31
-                    self.code = code.parent.clone();
-                    let mut bytes = BytesMut::with_capacity(4 + code.attr.len() + code.body.len());
-                    bytes.put(b'[');
-                    bytes.put(code.body.clone());
-                    bytes.put(&b"]("[..]);
-                    bytes.put(code.attr);
-                    bytes.put(b')');
-                    bytes
-                },
-
-                (b'4', b'0') => {
-                    // Clears spell/skill progress indicator
-                    // ESC<40ESC>40
-                    self.code = code.parent.clone();
-                    BytesMut::from(&b"[clear_spell_skill_progress_indicator]\n"[..])
-                },
-
-                (c1, c2) => {
-                    self.code = code.parent.clone();
-                    let prefix = relay_info_prefix((c1, c2));
-                    let mut bytes = BytesMut::with_capacity(prefix.len() + code.body.len() + 1);
-                    bytes.put(&prefix[..]);
-                    bytes.put(code.body);
-                    bytes.put(b'\n');
-                    bytes
-                }
-            },
-
-            None => BytesMut::new(),
-        }
     }
 }
 
@@ -295,21 +82,23 @@ const BYTE_CLOSE: u8 = b'>';
 const BYTE_PIPE: u8 = b'|';
 
 impl Decoder for BatCodec {
-    type Item = BytesMut;
+    type Item = BatFrame;
     type Error = io::Error;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, io::Error> {
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BatFrame>, io::Error> {
         match self.state {
             State::Text => {
                 if buf.len() > 0 {
                     if let Some(offset) = buf[..].iter().position(|b| *b == BYTE_ESC) {
                         let bytes = buf.split_to(offset);
                         buf.split_to(1);
+                        let frame = self.process(bytes);
                         self.transition_to(State::Esc);
-                        Ok(self.process(bytes))
+                        Ok(Some(frame))
                     } else {
                         let len = buf.len();
-                        Ok(self.process(buf.split_to(len)))
+                        let frame = self.process(buf.split_to(len));
+                        Ok(Some(frame))
                     }
                 } else {
                     Ok(None)
@@ -322,13 +111,13 @@ impl Decoder for BatCodec {
                         BYTE_OPEN => {
                             buf.split_to(1);
                             self.transition_to(State::Open(None, None));
-                            Ok(Some(BytesMut::new()))
+                            Ok(Some(BatFrame::Nothing))
                         },
 
                         BYTE_CLOSE => {
                             buf.split_to(1);
                             self.transition_to(State::Close(None, None));
-                            Ok(Some(BytesMut::new()))
+                            Ok(Some(BatFrame::Nothing))
                         },
 
                         BYTE_PIPE => {
@@ -339,18 +128,20 @@ impl Decoder for BatCodec {
                                 Some(ref mut code) => {
                                     code.attr = code.body.clone();
                                     code.body.clear();
-                                    Ok(Some(BytesMut::new()))
+                                    Ok(Some(BatFrame::Nothing))
                                 },
 
                                 None => {
-                                    Ok(Some(BytesMut::from(&b"\x1b|"[..])))
+                                    let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_PIPE][..]));
+                                    Ok(Some(frame))
                                 },
                             }
                         },
 
                         _ => {
+                            let frame = self.process(BytesMut::from(&[BYTE_ESC][..]));
                             self.transition_to(State::Text);
-                            Ok(self.process(BytesMut::from(&[BYTE_ESC][..])))
+                            Ok(Some(frame))
                         },
                     }
                 } else {
@@ -364,12 +155,13 @@ impl Decoder for BatCodec {
                         c1 @ b'0' ..= b'9' => {
                             buf.split_to(1);
                             self.transition_to(State::Open(Some(c1), None));
-                            Ok(Some(BytesMut::new()))
+                            Ok(Some(BatFrame::Nothing))
                         },
 
                         _ => {
+                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_OPEN][..]));
                             self.transition_to(State::Text);
-                            Ok(self.process(BytesMut::from(&[BYTE_ESC, BYTE_OPEN][..])))
+                            Ok(Some(frame))
                         },
                     }
                 } else {
@@ -383,12 +175,13 @@ impl Decoder for BatCodec {
                         c2 @ b'0' ..= b'9' => {
                             buf.split_to(1);
                             self.transition_to(State::Open(Some(c1), Some(c2)));
-                            Ok(Some(BytesMut::new()))
+                            Ok(Some(BatFrame::Nothing))
                         },
 
                         _ => {
+                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_OPEN, c1][..]));
                             self.transition_to(State::Text);
-                            Ok(self.process(BytesMut::from(&[BYTE_ESC, BYTE_OPEN, c1][..])))
+                            Ok(Some(frame))
                         },
                     }
                 } else {
@@ -398,10 +191,11 @@ impl Decoder for BatCodec {
 
             State::Open(Some(c1), Some(c2)) => {
                 if buf.len() > 0 {
-                    let code = ControlCode::new((c1, c2), self.code.clone().map(|x| *x));
-                    self.code = Some(Box::new(code));
+                    let current_code: Option<Box<ControlCode>> = self.code.clone();
+                    let new_code = ControlCode::new((c1, c2), current_code.map(|x| *x));
+                    self.code = Some(Box::new(new_code));
                     self.transition_to(State::Text);
-                    Ok(Some(BytesMut::new()))
+                    Ok(Some(BatFrame::Nothing))
                 } else {
                     Ok(None)
                 }
@@ -413,12 +207,13 @@ impl Decoder for BatCodec {
                         c1 @ b'0' ..= b'9' => {
                             buf.split_to(1);
                             self.transition_to(State::Close(Some(c1), None));
-                            Ok(Some(BytesMut::new()))
+                            Ok(Some(BatFrame::Nothing))
                         },
 
                         _ => {
+                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_CLOSE][..]));
                             self.transition_to(State::Text);
-                            Ok(self.process(BytesMut::from(&[BYTE_ESC, BYTE_CLOSE][..])))
+                            Ok(Some(frame))
                         },
                     }
                 } else {
@@ -432,12 +227,13 @@ impl Decoder for BatCodec {
                         c2 @ b'0' ..= b'9' => {
                             buf.split_to(1);
                             self.transition_to(State::Close(Some(c1), Some(c2)));
-                            Ok(Some(BytesMut::new()))
+                            Ok(Some(BatFrame::Nothing))
                         },
 
                         _ => {
+                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_CLOSE, c1][..]));
                             self.transition_to(State::Text);
-                            Ok(self.process(BytesMut::from(&[BYTE_ESC, BYTE_CLOSE, c1][..])))
+                            Ok(Some(frame))
                         },
                     }
                 } else {
@@ -446,26 +242,35 @@ impl Decoder for BatCodec {
             },
 
             State::Close(Some(c1), Some(c2)) => {
-                self.transition_to(State::Text);
                 match self.code.clone() {
                     Some(ref code) if code.id == (c1, c2) => {
-                        let bytes = self.process_code();
-                        Ok(self.process(bytes))
+                        match code.parent.clone() {
+                            Some(mut parent) => {
+                                let child_bytes = code.to_bytes();
+                                self.code = Some(parent);
+                                let frame = self.process(child_bytes);
+                                self.transition_to(State::Text);
+                                Ok(Some(frame))
+                            },
+
+                            None => {
+                                let frame = BatFrame::Code(code.clone());
+                                self.code = None;
+                                self.transition_to(State::Text);
+                                Ok(Some(frame))
+                            }
+                        }
                     },
 
-                    Some(_) => {
-                        // unmatching close tag, discard "ESC>??"
-                        Ok(Some(BytesMut::new()))
-                    },
-
-                    None => {
-                        // should not happen, discard "ESC>??"
-                        Ok(Some(BytesMut::new()))
+                    _ => {
+                        debug!("discard unmatching close code: {}{}", c1, c2);
+                        self.transition_to(State::Text);
+                        Ok(Some(BatFrame::Nothing))
                     },
                 }
             },
 
-            _ => Ok(Some(BytesMut::new())),
+            _ => Ok(Some(BatFrame::Nothing)),
         }
     }
 }
@@ -486,312 +291,98 @@ mod tests {
     use super::*;
     use env_logger;
 
-    macro_rules! decode {
-        ( $bytes:expr, $expected:expr ) => {{
-            let mut bytes = BytesMut::from(&$bytes[..]);
-            let mut bat_codec = BatCodec::new();
+    #[test]
+    fn code_stack() {
+        let _ = env_logger::try_init();
 
-            let mut output = BytesMut::new();
-            loop {
-                match bat_codec.decode(&mut bytes) {
-                    Ok(Some(bytes)) => {
-                        if bytes.len() > 0 {
-                            output.reserve(bytes.len());
-                            output.put(bytes);
-                        }
-                    },
+        let mut input = BytesMut::from(&b"\x1b<20FFFFFF\x1b|\x1b<210000FF\x1b|Test output, white on blue\x1b>21\x1b>20"[..]);
+        let mut codec = BatCodec::new();
 
-                    Ok(None) => {
-                        break;
-                    },
+        let mut frame: BatFrame = BatFrame::Nothing;
+        while let Ok(Some(f)) = codec.decode(&mut input) {
+            frame = f;
+        }
 
-                    Err(e) => {
-                        error!("{}", e);
-                        break;
-                    }
-                }
+        assert!(match frame {
+            BatFrame::Code(code) => {
+                assert_eq!(code.id, (b'2', b'0'));
+                assert_eq!(code.attr, &b"FFFFFF"[..]);
+                assert_eq!(code.body, &b"\x1b[48;5;12mTest output, white on blue\x1b[0m"[..]);
+                true
+            },
+
+            _ => false
+        });
+    }
+
+    #[test]
+    fn code_in_plain_text() {
+        let _ = env_logger::try_init();
+
+        let mut input = BytesMut::from(&b"foo\n\x1b<20FFFFFF\x1b|white text\x1b>20bar"[..]);
+        let mut codec = BatCodec::new();
+
+        let mut frame: BatFrame = BatFrame::Nothing;
+        while let Ok(Some(f)) = codec.decode(&mut input) {
+            match f {
+                BatFrame::Bytes(_) => {
+                    frame = f;
+                    break
+                },
+
+                _ => continue,
             }
+        }
 
-            assert_eq!(&output[..], &$expected[..]);
-        }};
-    }
+        assert!(match frame {
+            BatFrame::Bytes(ref bytes) => {
+                assert_eq!(&bytes[..], b"foo\n");
+                true
+            },
 
-    #[test]
-    fn stack() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<20FFFFFF\x1b|\x1b<210000FF\x1b|Test output, white on blue\x1b>21\x1b>20",
-            b"\x1b[38;5;15m\x1b[48;5;12mTest output, white on blue\x1b[0m\x1b[0m"
-        );
-    }
+            _ => false
+        });
 
-    #[test]
-    fn stack2() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<10chan_swe+\x1b|\x1b<20FFFF00\x1b|Gore <swe+>: detta \x84r n\x86got p\x86 svenska\x1b>20\x1b>10",
-            b"[chan_swe+] \x1b[38;5;11mGore <swe+>: detta \x84r n\x86got p\x86 svenska\x1b[0m\n"
-        );
-    }
+        while let Ok(Some(f)) = codec.decode(&mut input) {
+            match f {
+                BatFrame::Code(_) => {
+                    frame = f;
+                    break
+                },
 
-    #[test]
-    fn code_00() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<00\x1b>00",
-            b"\x1b[0m"
-        );
-    }
+                _ => continue,
+            }
+        }
 
-    #[test]
-    fn code_05() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<05\x1b>05",
-            b"[login] OK\n"
-        );
-    }
+        assert!(match frame {
+            BatFrame::Code(ref code) => {
+                assert_eq!(code.id, (b'2', b'0'));
+                assert_eq!(&code.attr[..], b"FFFFFF");
+                assert_eq!(&code.body[..], b"white text");
+                true
+            },
 
-    #[test]
-    fn code_06() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<06Incorrect password.\x1b>06",
-            b"[login] Incorrect password.\n"
-        );
-    }
+            _ => false
+        });
 
-    #[test]
-    fn code_10() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<10chan_sales\x1b|Test output\x1b>10",
-            b"[chan_sales] Test output\n"
-        );
-    }
+        while let Ok(Some(f)) = codec.decode(&mut input) {
+            match f {
+                BatFrame::Bytes(_) => {
+                    frame = f;
+                    break
+                },
 
-    #[test]
-    fn code_11() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<11\x1b>11",
-            b"[clear_screen]\n"
-        );
-    }
+                _ => continue,
+            }
+        }
 
-    #[test]
-    fn code_20() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<20FF0000\x1b|Test\x1b>20",
-            b"\x1b[38;5;9mTest\x1b[0m"
-        );
-    }
+        assert!(match frame {
+            BatFrame::Bytes(ref bytes) => {
+                assert_eq!(&bytes[..], b"bar");
+                true
+            },
 
-    #[test]
-    fn code_21() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<21d70000\x1b|Test\x1b>21",
-            b"\x1b[48;5;160mTest\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn code_22() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<22Test\x1b>22",
-            b"\x1b[1mTest\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn code_23() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<23Test\x1b>23",
-            b"\x1b[3mTest\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn code_24() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<24Test\x1b>24",
-            b"\x1b[4mTest\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn code_25() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<25Test\x1b>25",
-            b"\x1b[5mTest\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn code_29() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<29\x1b>29",
-            b"\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn code_30() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<30http://bat.org\x1b|BatMUD\x1b>30",
-            b"[BatMUD](http://bat.org)"
-        );
-    }
-
-    #[test]
-    fn code_31() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<31north\x1b|Go north\x1b>31",
-            b"[Go north](north)"
-        );
-    }
-
-    #[test]
-    fn code_40() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<40\x1b>40",
-            b"[clear_spell_skill_progress_indicator]\n"
-        );
-    }
-
-    #[test]
-    fn code_41() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<41magic_missile 2\x1b>41",
-            b"[player_spell_action_status] magic_missile 2\n"
-        );
-    }
-
-    #[test]
-    fn code_42() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<42bladed_fury 5\x1b>42",
-            b"[player_skill_action_status] bladed_fury 5\n"
-        );
-    }
-
-    #[test]
-    fn code_50() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<50100 200 200 250 300 350\x1b>50",
-            b"[player_full_health_status] 100 200 200 250 300 350\n"
-        );
-    }
-
-    #[test]
-    fn code_51() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<51100 200 200\x1b>51",
-            b"[player_partial_health_status] 100 200 200\n"
-        );
-    }
-
-    #[test]
-    fn code_52() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<52Ulath Pulath coder 100 1 1345323\x1b>52",
-            b"[player_info] Ulath Pulath coder 100 1 1345323\n"
-        );
-    }
-
-    #[test]
-    fn code_53() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<531345323\x1b>53",
-            b"[player_free_exp] 1345323\n"
-        );
-    }
-
-    #[test]
-    fn code_54() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<540 0 0\x1b>54",
-            b"[player_status] 0 0 0\n"
-        );
-    }
-
-    #[test]
-    fn code_60() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<60ulath coder 1 laenor 5100 5200 0\x1b>60",
-            b"[player_location] ulath coder 1 laenor 5100 5200 0\n"
-        );
-    }
-
-    #[test]
-    fn code_61() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<61ulath 1 1\x1b>61",
-            b"[player_party_position] ulath 1 1\n"
-        );
-    }
-
-    #[test]
-    fn code_62() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<62Killer orc 1 50 101 200 202 303 404 504 ekuva_ja_expaa 1 1 1 0 0 0 0 1 0 0 0 0 0 0 0 12345 100000 1234 Wed_Oct_31_15:57:52_2007\x1b>62",
-            b"[party_player_status] Killer orc 1 50 101 200 202 303 404 504 ekuva_ja_expaa 1 1 1 0 0 0 0 1 0 0 0 0 0 0 0 12345 100000 1234 Wed_Oct_31_15:57:52_2007\n"
-        );
-    }
-
-    #[test]
-    fn code_63() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<63ulath\x1b>63",
-            b"[party_player_left] ulath\n"
-        );
-    }
-
-    #[test]
-    fn code_64() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<64lay_on_hands 120\x1b>64",
-            b"[player_effect] lay_on_hands 120\n"
-        );
-    }
-
-    #[test]
-    fn code_70() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<70evilmonster 45\x1b>70",
-            b"[player_target] evilmonster 45\n"
-        );
-    }
-
-    #[test]
-    fn code_99() {
-        let _ = env_logger::try_init();
-        decode!(
-            b"\x1b<991 dex 300\x1b>99",
-            b"[custom_info] 1 dex 300\n"
-        );
+            _ => false
+        });
     }
 }
