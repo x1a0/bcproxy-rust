@@ -169,7 +169,7 @@ impl BatCodec {
                     self.code = code.parent.clone();
                     let mut bytes = BytesMut::with_capacity(15 + code.body.len());
                     bytes.put(&b"\x1b[38;5;"[..]);
-                    bytes.put(u8_to_chars(rgb_to_xterm(code.attr.clone().freeze())));
+                    bytes.put(u8_to_chars(rgb_to_xterm(code.attr.clone())));
                     bytes.put(b'm');
                     bytes.put(code.body);
                     bytes.put(&b"\x1b[0m"[..]);
@@ -182,7 +182,7 @@ impl BatCodec {
                     self.code = code.parent.clone();
                     let mut bytes = BytesMut::with_capacity(15 + code.body.len());
                     bytes.put(&b"\x1b[48;5;"[..]);
-                    bytes.put(u8_to_chars(rgb_to_xterm(code.attr.clone().freeze())));
+                    bytes.put(u8_to_chars(rgb_to_xterm(code.attr.clone())));
                     bytes.put(b'm');
                     bytes.put(code.body);
                     bytes.put(&b"\x1b[0m"[..]);
