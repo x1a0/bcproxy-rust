@@ -216,6 +216,10 @@ impl ControlCode {
 
             // Defines the output to be a message of type <arg>
             // ESC<10chan_salesESC|Test outputESC>10
+            (b'1', b'0') if &self.attr[..] == b"spec_map" && &body[..] == b"NoMapSupport" => {
+                BytesMut::from(&b"[spec_map] NoMapSupport\n"[..])
+            },
+
             (b'1', b'0') if &self.attr[..] == b"spec_map" => {
                 // "spec_map" has multiple lines:
                 // [spec_map:0] [clear_screen]
