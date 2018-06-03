@@ -56,6 +56,120 @@ fn count_lines(bytes: &BytesMut) -> usize {
     }
 }
 
+#[derive(Debug)]
+enum BatMapperParserState {
+    Area,
+    RoomId,
+    FromDirection,
+    ZIndex,
+    ShortDesc,
+    LongDesc,
+    Exits,
+}
+
+fn bat_mapper_to_bytes(input: &mut BytesMut) -> BytesMut {
+    let mut state = BatMapperParserState::Area;
+    let mut long_line = 0;
+    let mut output = BytesMut::with_capacity(input.len());
+
+    while input.len() > 0 {
+        let mut i = 0;
+        for b in input.clone() {
+            if b == b';' || b == b'\n' {
+                break;
+            } else {
+                i += 1;
+            }
+        }
+
+        if i == input.len() {
+            output.extend(b"[bat_mapper] ");
+            output.extend(input.clone());
+            break;
+        }
+
+        match input[i] {
+            b';' if input.len() - 1 > i && input[i + 1] == b';' => {
+                match state {
+                    BatMapperParserState::Area => {
+                        output.extend(b"[bat_mapper:area] ");
+                        state = BatMapperParserState::RoomId;
+                    },
+
+                    BatMapperParserState::RoomId => {
+                        output.extend(&[b'\n'][..]);
+                        output.extend(b"[bat_mapper:id] ");
+                        state = BatMapperParserState::FromDirection;
+                    },
+
+                    BatMapperParserState::FromDirection => {
+                        output.extend(&[b'\n'][..]);
+                        output.extend(b"[bat_mapper:from] ");
+                        state = BatMapperParserState::ZIndex;
+                    },
+
+                    BatMapperParserState::ZIndex => {
+                        output.extend(&[b'\n'][..]);
+                        output.extend(b"[bat_mapper:z] ");
+                        state = BatMapperParserState::ShortDesc;
+                    },
+
+                    BatMapperParserState::ShortDesc => {
+                        output.extend(&[b'\n'][..]);
+                        output.extend(b"[bat_mapper:short] ");
+                        state = BatMapperParserState::LongDesc;
+                    },
+
+                    BatMapperParserState::LongDesc => {
+                        state = BatMapperParserState::Exits;
+                    },
+
+                    BatMapperParserState::Exits => {
+                        output.extend(b"[bat_mapper:exits] ");
+                        state = BatMapperParserState::Exits;
+                    },
+                }
+
+                let mut bytes = input.split_to(i + 2);
+                if bytes.len() > 2 {
+                    let len = bytes.len();
+                    output.extend(bytes.split_to(len - 2));
+                }
+            },
+
+            b';' => {
+                let bytes = input.split_to(i + 1);
+                output.extend(bytes);
+            },
+
+            b'\n' => {
+                match state {
+                    BatMapperParserState::LongDesc => {
+                        if long_line == 0 {
+                            output.extend(&[b'\n']);
+                        }
+
+                        output.extend(b"[bat_mapper:long:");
+                        output.extend(usize_to_chars(long_line));
+                        output.extend(b"] ");
+                        long_line += 1;
+                    },
+
+                    _ => ()
+                }
+
+                let bytes = input.split_to(i + 1);
+                output.extend(bytes);
+            },
+
+            _ => ()
+        }
+    }
+
+    output.extend(&[b'\n'][..]);
+    output
+}
+
 impl ControlCode {
     pub fn new(id: (u8, u8), parent: Option<ControlCode>) -> ControlCode {
         ControlCode {
@@ -281,6 +395,11 @@ impl ControlCode {
                     bytes.put(b')');
                     bytes
                 }
+            },
+
+            (b'9', b'9') if body.starts_with(b"BAT_MAPPER;;") => {
+                let mut bytes = body.split_off(12);
+                bat_mapper_to_bytes(&mut bytes)
             },
 
             (b'9', b'9') => {
@@ -620,6 +739,20 @@ mod tests {
         let _ = env_logger::try_init();
         let code = mk_code!((b'9', b'9'), b"r1\nr2\nr3", b"custom_info");
         verify!(code.to_bytes(), b"[custom_info:0] r1\n[custom_info:1] r2\n[custom_info:2] r3\n");
+    }
+
+    #[test]
+    fn code_99_bat_mapper() {
+        let _ = env_logger::try_init();
+        let code = mk_code!((b'9', b'9'), b"BAT_MAPPER;;arelium;;$apr1$dF!!_X#W$0QcXnT/1XhTQG7dSUp6WI.;;east;;1;;A Emergency Operations;;You stand in the middle of Emergency Operations.\nThe room is huge but silent. All the activity has ceased,\nor is there something wrong with you. There are several tables\nfull of equipment and few monitors showing something.\nThis is the place where we try to revive people who have lost\ntheir heartbeat, if you think there is something wrong with you\njust ask for help ('ask help', 'help me')\n;;west;;", b"custom_info");
+        assert_eq!(code.to_bytes(), &b"[bat_mapper:area] arelium\n[bat_mapper:id] $apr1$dF!!_X#W$0QcXnT/1XhTQG7dSUp6WI.\n[bat_mapper:from] east\n[bat_mapper:z] 1\n[bat_mapper:short] A Emergency Operations\n[bat_mapper:long:0] You stand in the middle of Emergency Operations.\n[bat_mapper:long:1] The room is huge but silent. All the activity has ceased,\n[bat_mapper:long:2] or is there something wrong with you. There are several tables\n[bat_mapper:long:3] full of equipment and few monitors showing something.\n[bat_mapper:long:4] This is the place where we try to revive people who have lost\n[bat_mapper:long:5] their heartbeat, if you think there is something wrong with you\n[bat_mapper:long:6] just ask for help ('ask help', 'help me')\n[bat_mapper:exits] west\n"[..]);
+    }
+
+    #[test]
+    fn code_99_bat_mapper_realm_map() {
+        let _ = env_logger::try_init();
+        let code = mk_code!((b'9', b'9'), b"BAT_MAPPER;;REALM_MAP");
+        assert_eq!(code.to_bytes(), &b"[bat_mapper] REALM_MAP\n"[..]);
     }
 
     #[test]
