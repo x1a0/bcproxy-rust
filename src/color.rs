@@ -2,8 +2,8 @@ use std::u8;
 
 use bytes::{BytesMut, BufMut};
 
-/// Converts RGB values to the nearest equivalent xterm-256 color.
-/// Inspired by https://github.com/lotheac/bcproxy
+// Converts RGB values to the nearest equivalent xterm-256 color.
+// Inspired by https://github.com/lotheac/bcproxy
 
 const BASE_COLORS: [u32; 16] = [
     0x000000,

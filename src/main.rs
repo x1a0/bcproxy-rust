@@ -58,6 +58,7 @@ fn main() {
                         match frame {
                             BatFrame::Bytes(bytes) => client_writer_mut.write(&bytes[..]),
                             BatFrame::Code(code) => client_writer_mut.write(&code.to_bytes()[..]),
+                            BatFrame::BatMapper(mapper) => client_writer_mut.write(&mapper.output[..]),
                             BatFrame::Nothing => client_writer_mut.write(&[][..]),
                         }
                     })

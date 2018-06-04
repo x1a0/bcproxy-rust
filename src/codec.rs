@@ -3,12 +3,13 @@ use std::io;
 use bytes::{Bytes, BufMut, BytesMut};
 use tokio_io::codec::{Encoder, Decoder};
 
-use super::protocol::ControlCode;
+use super::protocol::{ControlCode, BatMapper};
 
 #[derive(Debug)]
 pub enum BatFrame {
     Bytes(BytesMut),
     Code(Box<ControlCode>),
+    BatMapper(BatMapper),
     Nothing,
 }
 
@@ -61,16 +62,21 @@ impl BatCodec {
 
     fn on_code_close(&mut self, (c1, c2): (u8, u8)) -> BatFrame {
         match self.code.clone() {
-            Some(ref code) if code.id == (c1, c2) => {
+            Some(ref mut code) if code.id == (c1, c2) => {
                 match code.parent.clone() {
-                    Some(mut parent) => {
+                    Some(parent) => {
                         let child_bytes = code.to_bytes();
                         self.code = Some(parent);
                         let frame = self.process(child_bytes);
                         frame
                     },
 
-                    None => {
+                    None if (c1, c2) == (b'9', b'9') => {
+                        let bat_mapper = BatMapper::new(code.body.split_off(12));
+                        BatFrame::BatMapper(bat_mapper)
+                    },
+
+                    _ => {
                         let frame = BatFrame::Code(code.clone());
                         self.code = None;
                         frame
@@ -79,7 +85,8 @@ impl BatCodec {
             },
 
             _ => {
-                debug!("discard unmatching close code: {}{}", c1, c2);
+                warn!("discard unmatching close code {}{} and current code {:?}", c1, c2, self.code);
+                self.code = None;
                 BatFrame::Nothing
             },
         }
