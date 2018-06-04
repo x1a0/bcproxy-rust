@@ -170,12 +170,12 @@ fn bat_mapper_to_bytes(input: &mut BytesMut) -> BytesMut {
 }
 
 impl ControlCode {
-    pub fn new(id: (u8, u8), parent: Option<ControlCode>) -> ControlCode {
+    pub fn new(id: (u8, u8), parent: Option<Box<ControlCode>>) -> ControlCode {
         ControlCode {
             id: id,
             attr: BytesMut::new(),
             body: BytesMut::new(),
-            parent: parent.map(Box::new),
+            parent: parent,
         }
     }
 

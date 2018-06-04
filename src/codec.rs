@@ -1,4 +1,4 @@
-use std::{io, fmt};
+use std::io;
 
 use bytes::{Bytes, BufMut, BytesMut};
 use tokio_io::codec::{Encoder, Decoder};
@@ -6,40 +6,25 @@ use tokio_io::codec::{Encoder, Decoder};
 use super::protocol::ControlCode;
 
 #[derive(Debug)]
-pub struct BatCodec {
-    state: State,
-    next_index: usize,
-    code: Option<Box<ControlCode>>,
+pub enum BatFrame {
+    Bytes(BytesMut),
+    Code(Box<ControlCode>),
+    Nothing,
 }
 
 #[derive(Debug)]
 enum State {
     Text,
     Esc,
-    Open(Option<u8>, Option<u8>),
-    Close(Option<u8>, Option<u8>),
-}
-
-impl fmt::Display for State {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            State::Text =>
-                write!(f, "Text"),
-            State::Esc =>
-                write!(f, "Esc"),
-            State::Open(c1, c2)  =>
-                write!(f, "Open ({}{})", c1.map_or('-', |c| c as char), c2.map_or('-', |c| c as char)),
-            State::Close(c1, c2) =>
-                write!(f, "Close ({}{})", c1.map_or('-', |c| c as char), c2.map_or('-', |c| c as char)),
-        }
-    }
+    Open(Option<u8>),
+    Close(Option<u8>),
 }
 
 #[derive(Debug)]
-pub enum BatFrame {
-    Bytes(BytesMut),
-    Code(Box<ControlCode>),
-    Nothing,
+pub struct BatCodec {
+    state: State,
+    next_index: usize,
+    code: Option<Box<ControlCode>>,
 }
 
 impl BatCodec {
@@ -69,59 +54,81 @@ impl BatCodec {
         }
     }
 
+    fn on_code_open(&mut self, (c1, c2): (u8, u8)) {
+        let new_code = ControlCode::new((c1, c2), self.code.as_ref().map(|x| x.clone()));
+        self.code = Some(Box::new(new_code));
+    }
+
+    fn on_code_close(&mut self, (c1, c2): (u8, u8)) -> BatFrame {
+        match self.code.clone() {
+            Some(ref code) if code.id == (c1, c2) => {
+                match code.parent.clone() {
+                    Some(mut parent) => {
+                        let child_bytes = code.to_bytes();
+                        self.code = Some(parent);
+                        let frame = self.process(child_bytes);
+                        frame
+                    },
+
+                    None => {
+                        let frame = BatFrame::Code(code.clone());
+                        self.code = None;
+                        frame
+                    }
+                }
+            },
+
+            _ => {
+                debug!("discard unmatching close code: {}{}", c1, c2);
+                BatFrame::Nothing
+            },
+        }
+    }
+
     fn transition_to(&mut self, state: State) {
         let id = self.code.clone().map_or(('-', '-'), |c| (c.id.0 as char, c.id.1 as char));
-        debug!("State transition from {} to {}. Current code: {}{}", self.state, state, id.0, id.1);
+        debug!("State transition from {:?} to {:?}. Current code: {}{}", self.state, state, id.0, id.1);
         self.state = state;
     }
 }
-
-const BYTE_ESC: u8 = b'\x1b';
-const BYTE_OPEN: u8 = b'<';
-const BYTE_CLOSE: u8 = b'>';
-const BYTE_PIPE: u8 = b'|';
 
 impl Decoder for BatCodec {
     type Item = BatFrame;
     type Error = io::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BatFrame>, io::Error> {
-        match self.state {
-            State::Text => {
-                if buf.len() > 0 {
-                    if let Some(offset) = buf[..].iter().position(|b| *b == BYTE_ESC) {
-                        let bytes = buf.split_to(offset);
-                        buf.split_to(1);
-                        let frame = self.process(bytes);
+        if buf.is_empty() {
+            Ok(None)
+        } else {
+            match self.state {
+                State::Text => {
+                    if let Some(offset) = buf.iter().position(|&b| b == b'\x1b') {
+                        let mut bytes = buf.split_to(offset + 1);
+                        let frame = self.process(bytes.split_to(offset));
                         self.transition_to(State::Esc);
                         Ok(Some(frame))
                     } else {
-                        let len = buf.len();
-                        let frame = self.process(buf.split_to(len));
+                        let frame = self.process(buf.take());
                         Ok(Some(frame))
                     }
-                } else {
-                    Ok(None)
-                }
-            },
+                },
 
-            State::Esc => {
-                if buf.len() > 0 {
+                State::Esc => {
                     match buf[0] {
-                        BYTE_OPEN => {
-                            buf.split_to(1);
-                            self.transition_to(State::Open(None, None));
+                        b'<' => {
+                            buf.advance(1);
+                            self.transition_to(State::Open(None));
                             Ok(Some(BatFrame::Nothing))
                         },
 
-                        BYTE_CLOSE => {
-                            buf.split_to(1);
-                            self.transition_to(State::Close(None, None));
+                        b'>' => {
+                            buf.advance(1);
+                            self.transition_to(State::Close(None));
                             Ok(Some(BatFrame::Nothing))
                         },
 
-                        BYTE_PIPE => {
-                            buf.split_to(1);
+                        b'|' => {
+                            buf.advance(1);
                             self.transition_to(State::Text);
 
                             match self.code {
@@ -132,145 +139,90 @@ impl Decoder for BatCodec {
                                 },
 
                                 None => {
-                                    let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_PIPE][..]));
+                                    let frame = self.process(BytesMut::from(&[b'\x1b', b'|'][..]));
                                     Ok(Some(frame))
                                 },
                             }
                         },
 
                         _ => {
-                            let frame = self.process(BytesMut::from(&[BYTE_ESC][..]));
+                            let frame = self.process(BytesMut::from(&[b'\x1b'][..]));
                             self.transition_to(State::Text);
                             Ok(Some(frame))
                         },
                     }
-                } else {
-                    Ok(None)
-                }
-            },
+                },
 
-            State::Open(None, None) => {
-                if buf.len() > 0 {
+                State::Open(None) => {
                     match buf[0] {
                         c1 @ b'0' ..= b'9' => {
-                            buf.split_to(1);
-                            self.transition_to(State::Open(Some(c1), None));
+                            buf.advance(1);
+                            self.transition_to(State::Open(Some(c1)));
                             Ok(Some(BatFrame::Nothing))
                         },
 
-                        _ => {
-                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_OPEN][..]));
+                        c1 => {
+                            let frame = self.process(BytesMut::from(&[b'\x1b', b'<', c1][..]));
+                            buf.advance(1);
                             self.transition_to(State::Text);
                             Ok(Some(frame))
                         },
                     }
-                } else {
-                    Ok(None)
-                }
-            },
+                },
 
-            State::Open(Some(c1), None) => {
-                if buf.len() > 0 {
+                State::Open(Some(c1)) => {
                     match buf[0] {
                         c2 @ b'0' ..= b'9' => {
-                            buf.split_to(1);
-                            self.transition_to(State::Open(Some(c1), Some(c2)));
+                            self.on_code_open((c1, c2));
+                            buf.advance(1);
+                            self.transition_to(State::Text);
                             Ok(Some(BatFrame::Nothing))
                         },
 
-                        _ => {
-                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_OPEN, c1][..]));
+                        c2 => {
+                            let frame = self.process(BytesMut::from(&[b'\x1b', b'<', c1, c2][..]));
+                            buf.advance(1);
                             self.transition_to(State::Text);
                             Ok(Some(frame))
                         },
                     }
-                } else {
-                    Ok(None)
-                }
-            },
+                },
 
-            State::Open(Some(c1), Some(c2)) => {
-                if buf.len() > 0 {
-                    let current_code: Option<Box<ControlCode>> = self.code.clone();
-                    let new_code = ControlCode::new((c1, c2), current_code.map(|x| *x));
-                    self.code = Some(Box::new(new_code));
-                    self.transition_to(State::Text);
-                    Ok(Some(BatFrame::Nothing))
-                } else {
-                    Ok(None)
-                }
-            },
-
-            State::Close(None, None) => {
-                if buf.len() > 0 {
+                State::Close(None) => {
                     match buf[0] {
                         c1 @ b'0' ..= b'9' => {
-                            buf.split_to(1);
-                            self.transition_to(State::Close(Some(c1), None));
+                            buf.advance(1);
+                            self.transition_to(State::Close(Some(c1)));
                             Ok(Some(BatFrame::Nothing))
                         },
 
-                        _ => {
-                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_CLOSE][..]));
+                        c1 => {
+                            let frame = self.process(BytesMut::from(&[b'\x1b', b'>', c1][..]));
+                            buf.advance(1);
                             self.transition_to(State::Text);
                             Ok(Some(frame))
                         },
                     }
-                } else {
-                    Ok(None)
-                }
-            },
+                },
 
-            State::Close(Some(c1), None) => {
-                if buf.len() > 0 {
+                State::Close(Some(c1)) => {
                     match buf[0] {
                         c2 @ b'0' ..= b'9' => {
-                            buf.split_to(1);
-                            self.transition_to(State::Close(Some(c1), Some(c2)));
-                            Ok(Some(BatFrame::Nothing))
+                            let frame = self.on_code_close((c1, c2));
+                            buf.advance(1);
+                            self.transition_to(State::Text);
+                            Ok(Some(frame))
                         },
 
-                        _ => {
-                            let frame = self.process(BytesMut::from(&[BYTE_ESC, BYTE_CLOSE, c1][..]));
+                        c2 => {
+                            let frame = self.process(BytesMut::from(&[b'\x1b', b'>', c1, c2][..]));
+                            buf.advance(1);
                             self.transition_to(State::Text);
                             Ok(Some(frame))
                         },
                     }
-                } else {
-                    Ok(None)
-                }
-            },
-
-            State::Close(Some(c1), Some(c2)) => {
-                match self.code.clone() {
-                    Some(ref code) if code.id == (c1, c2) => {
-                        match code.parent.clone() {
-                            Some(mut parent) => {
-                                let child_bytes = code.to_bytes();
-                                self.code = Some(parent);
-                                let frame = self.process(child_bytes);
-                                self.transition_to(State::Text);
-                                Ok(Some(frame))
-                            },
-
-                            None => {
-                                let frame = BatFrame::Code(code.clone());
-                                self.code = None;
-                                self.transition_to(State::Text);
-                                Ok(Some(frame))
-                            }
-                        }
-                    },
-
-                    _ => {
-                        debug!("discard unmatching close code: {}{}", c1, c2);
-                        self.transition_to(State::Text);
-                        Ok(Some(BatFrame::Nothing))
-                    },
-                }
-            },
-
-            _ => Ok(Some(BatFrame::Nothing)),
+                },
+            }
         }
     }
 }
