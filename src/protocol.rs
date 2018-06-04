@@ -8,7 +8,6 @@ pub struct ControlCode {
     pub attr: BytesMut,
     pub body: BytesMut,
     pub parent: Option<Box<ControlCode>>,
-    pub closed_child: Option<Box<ControlCode>>,
 }
 
 macro_rules! relay_prefix {
@@ -177,19 +176,11 @@ impl ControlCode {
             attr: BytesMut::new(),
             body: BytesMut::new(),
             parent: parent.map(Box::new),
-            closed_child: None,
         }
     }
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut body = self.body.clone();
-
-        if let Some(ref code) = self.closed_child {
-            let bytes = code.to_bytes();
-            let len = bytes.len();
-            body.reserve(len);
-            body.put(bytes);
-        }
 
         match self.id {
             // Closes any open control code tags and resets text properties
@@ -494,14 +485,6 @@ mod tests {
                 code
             }
         };
-
-        ($code:expr, $body:expr, $attr:expr, $closed_child:expr) => {
-            {
-                let mut parent = mk_code!($code, $body, $attr);
-                parent.closed_child = Some(Box::new($closed_child));
-                parent
-            }
-        };
     }
 
     macro_rules! verify {
@@ -757,13 +740,5 @@ mod tests {
         let _ = env_logger::try_init();
         let code = mk_code!((b'9', b'9'), b"BAT_MAPPER;;REALM_MAP");
         assert_eq!(code.to_bytes(), &b"[bat_mapper] REALM_MAP\n"[..]);
-    }
-
-    #[test]
-    fn code_stack() {
-        let _ = env_logger::try_init();
-        let child = mk_code!((b'2', b'1'), b"Test output, white on blue", b"0000FF");
-        let code = mk_code!((b'2', b'0'), b"", b"FFFFFF", child);
-        verify!(code.to_bytes(), b"\x1b[38;5;15m\x1b[48;5;12mTest output, white on blue\x1b[0m\x1b[0m");
     }
 }
