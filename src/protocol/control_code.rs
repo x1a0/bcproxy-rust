@@ -149,6 +149,10 @@ impl ControlCode {
                 bytes
             },
 
+            (b'1', b'0') if self.attr.starts_with(b"chan_") => {
+                body
+            },
+
             (b'1', b'0') => {
                 let mut bytes = BytesMut::with_capacity(3 + self.attr.len() + body.len());
                 bytes.put(b'[');
@@ -398,8 +402,15 @@ mod tests {
     #[test]
     fn code_10() {
         let _ = env_logger::try_init();
+        let code = mk_code!((b'1', b'0'), b"Test output", b"foo");
+        verify!(code.to_bytes(), b"[foo] Test output");
+    }
+
+    #[test]
+    fn code_10_chan() {
+        let _ = env_logger::try_init();
         let code = mk_code!((b'1', b'0'), b"Test output", b"chan_sales");
-        verify!(code.to_bytes(), b"[chan_sales] Test output");
+        verify!(code.to_bytes(), b"Test output");
     }
 
     #[test]

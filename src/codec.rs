@@ -74,7 +74,8 @@ impl BatCodec {
                     },
 
                     None if (c1, c2) == (b'9', b'9') => {
-                        let bat_mapper = Box::new(BatMapper::new(code.body.split_off(12), self.bat_mapper.clone()));
+                        let bytes = code.body.split_off(12);
+                        let bat_mapper = Box::new(BatMapper::new(bytes, self.bat_mapper.clone()));
 
                         if bat_mapper.id.is_none() {
                             self.bat_mapper = None;

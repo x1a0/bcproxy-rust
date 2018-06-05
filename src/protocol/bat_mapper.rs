@@ -44,26 +44,14 @@ impl BatMapper {
         let mut from_dir = None;
         let mut output = BytesMut::with_capacity(input.len());
 
-        while input.len() > 0 {
-            let mut i = 0;
-            for &b in input.as_ref() {
-                if b == b';' || b == b'\n' {
-                    break;
-                } else {
-                    i += 1;
-                }
-            }
+        let mut next_index: usize = 0;
 
-            if i == input.len() {
-                output.extend(b"[bat_mapper] ");
-                output.extend(input);
-                break;
-            }
+        while let Some(i) = input[next_index..].iter().position(|&b| b == b';' || b == b'\n') {
+            let len = input.len();
+            match input[next_index + i] {
+                b';' if len > i + 1 && input[next_index + i + 1] == b';' => {
 
-            match input[i] {
-                b';' if input.len() - 1 > i && input[i + 1] == b';' => {
-
-                    let mut bytes = input.split_to(i);
+                    let mut bytes = input.split_to(i + next_index);
 
                     match state {
                         ParseState::Area => {
@@ -129,15 +117,15 @@ impl BatMapper {
                     }
 
                     input.advance(2);
+                    next_index = 0;
                 },
 
                 b';' => {
-                    let bytes = input.split_to(i + 1);
-                    output.extend(bytes);
+                    next_index = next_index + i + 1;
                 },
 
                 b'\n' => {
-                    let bytes = input.split_to(i + 1);
+                    let bytes = input.split_to(next_index + i + 1);
 
                     match state {
                         ParseState::LongDesc => {
@@ -162,10 +150,22 @@ impl BatMapper {
                     }
 
                     output.extend(bytes);
+                    next_index = 0;
                 },
 
-                _ => ()
+                _ => {
+                    panic!("0 == 1");
+                },
             }
+        }
+
+        match state {
+            ParseState::Area => output.extend(&b"[bat_mapper] "[..]),
+            _ => ()
+        }
+
+        if input.len() > 0 {
+            output.extend(input);
         }
 
         output.extend(&[b'\n'][..]);
@@ -192,17 +192,37 @@ mod tests {
     #[test]
     fn area_room() {
         let _ = env_logger::try_init();
-        let bat_mapper = BatMapper::new(BytesMut::from(&b"arelium;;$apr1$dF!!_X#W$0QcXnT/1XhTQG7dSUp6WI.;;east;;1;;A Emergency Operations;;You stand in the middle of Emergency Operations.\nThe room is huge but silent. All the activity has ceased,\nor is there something wrong with you. There are several tables\nfull of equipment and few monitors showing something.\nThis is the place where we try to revive people who have lost\ntheir heartbeat, if you think there is something wrong with you\njust ask for help ('ask help', 'help me')\n;;west;;"[..]), None);
+        let bat_mapper = BatMapper::new(BytesMut::from(&b"\
+dortlewall;;$apr1$dF!!_X#W$FQb5R4zU.u6aIWJRXqFlq1;;south;;1;;Monastery of Aeo;;\
+You are just inside the monastery of Aeo in Dortlewall. The old monastery is\n\
+to \x1b[38;5;10m\x1b[1msouth\x1b[0m\x1b[0m, and that is where you should head if you are here for the\n\
+tutorial. To west you can see a small public library, and to east there is the\n\
+new monastery, dug into the mountainside.\n\
+;;south,west,east;;"[..]), None);
 
-        assert_eq!(bat_mapper.output, &b"[bat_mapper:area] arelium\n[bat_mapper:id] $apr1$dF!!_X#W$0QcXnT/1XhTQG7dSUp6WI.\n[bat_mapper:from] east\n[bat_mapper:indoor] 1\n[bat_mapper:short] A Emergency Operations\n[bat_mapper:long:0] You stand in the middle of Emergency Operations.\n[bat_mapper:long:1] The room is huge but silent. All the activity has ceased,\n[bat_mapper:long:2] or is there something wrong with you. There are several tables\n[bat_mapper:long:3] full of equipment and few monitors showing something.\n[bat_mapper:long:4] This is the place where we try to revive people who have lost\n[bat_mapper:long:5] their heartbeat, if you think there is something wrong with you\n[bat_mapper:long:6] just ask for help ('ask help', 'help me')\n[bat_mapper:exits] west\n"[..]);
+        assert_eq!(bat_mapper.output, BytesMut::from(&b"\
+[bat_mapper:area] dortlewall\n\
+[bat_mapper:id] $apr1$dF!!_X#W$FQb5R4zU.u6aIWJRXqFlq1\n\
+[bat_mapper:from] south\n\
+[bat_mapper:indoor] 1\n\
+[bat_mapper:short] Monastery of Aeo\n\
+[bat_mapper:long:0] You are just inside the monastery of Aeo in Dortlewall. The old monastery is\n\
+[bat_mapper:long:1] to \x1b[38;5;10m\x1b[1msouth\x1b[0m\x1b[0m, and that is where you should head if you are here for the\n\
+[bat_mapper:long:2] tutorial. To west you can see a small public library, and to east there is the\n\
+[bat_mapper:long:3] new monastery, dug into the mountainside.\n\
+[bat_mapper:exits] south,west,east\n"[..]));
 
-        assert_eq!(bat_mapper.area, Some(String::from("arelium")));
-        assert_eq!(bat_mapper.id, Some(String::from("$apr1$dF!!_X#W$0QcXnT/1XhTQG7dSUp6WI.")));
-        assert_eq!(bat_mapper.short_desc, Some(String::from("A Emergency Operations")));
-        assert_eq!(bat_mapper.long_desc, Some(String::from("You stand in the middle of Emergency Operations.\nThe room is huge but silent. All the activity has ceased,\nor is there something wrong with you. There are several tables\nfull of equipment and few monitors showing something.\nThis is the place where we try to revive people who have lost\ntheir heartbeat, if you think there is something wrong with you\njust ask for help ('ask help', 'help me')\n")));
-        assert_eq!(bat_mapper.exits, Some(String::from("west")));
+        assert_eq!(bat_mapper.area, Some(String::from("dortlewall")));
+        assert_eq!(bat_mapper.id, Some(String::from("$apr1$dF!!_X#W$FQb5R4zU.u6aIWJRXqFlq1")));
+        assert_eq!(bat_mapper.short_desc, Some(String::from("Monastery of Aeo")));
+        assert_eq!(bat_mapper.long_desc, Some(String::from("\
+You are just inside the monastery of Aeo in Dortlewall. The old monastery is\n\
+to \x1b[38;5;10m\x1b[1msouth\x1b[0m\x1b[0m, and that is where you should head if you are here for the\n\
+tutorial. To west you can see a small public library, and to east there is the\n\
+new monastery, dug into the mountainside.\n")));
+        assert_eq!(bat_mapper.exits, Some(String::from("south,west,east")));
         assert_eq!(bat_mapper.is_indoor, Some(true));
-        assert_eq!(bat_mapper.from_dir, Some(String::from("east")));
+        assert_eq!(bat_mapper.from_dir, Some(String::from("south")));
     }
 
     #[test]
