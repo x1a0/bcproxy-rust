@@ -1,4 +1,5 @@
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate env_logger;
 extern crate tokio;
 extern crate tokio_io;
@@ -8,9 +9,10 @@ extern crate postgres;
 extern crate r2d2;
 extern crate r2d2_postgres;
 extern crate chrono;
+#[macro_use]
+extern crate clap;
 
 use std::sync::{Arc, Mutex};
-use std::env;
 use std::net::SocketAddr;
 
 use tokio::io::{copy, write_all, shutdown};
@@ -30,8 +32,15 @@ use db::*;
 fn main() {
     env_logger::init();
 
+    let matches = clap_app!(("BCProxy Rust") =>
+        (version: "0.1")
+        (@arg listen: -l --listen +takes_value "address and port to listen on")
+        (@arg server: -s --server +takes_value "BatMUD server")
+        (@arg db: --db +takes_value "postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]")
+    ).get_matches();
+
     info!("Connecting to database");
-    let pool = env::args().nth(3).map(|url| {
+    let pool = matches.value_of("db").map(|url| {
         let manager = PostgresConnectionManager::new(url, TlsMode::None).unwrap();
         r2d2::Pool::new(manager).unwrap()
     });
@@ -40,10 +49,10 @@ fn main() {
         warn!("No DB connection created. Room data will NOT be saved!");
     }
 
-    let listen_addr = env::args().nth(1).unwrap_or("127.0.0.1:9999".to_string());
+    let listen_addr = matches.value_of("listen").map_or("127.0.0.1:9999".to_string(), &str::to_string);
     let listen_addr = listen_addr.parse::<SocketAddr>().unwrap();
 
-    let bat_addr = env::args().nth(2).unwrap_or("83.145.249.153:2023".to_string());
+    let bat_addr = matches.value_of("server").map_or("83.145.249.153:2023".to_string(), &str::to_string);
     let bat_addr = bat_addr.parse::<SocketAddr>().unwrap();
 
     // Listen for incoming connections.
