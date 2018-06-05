@@ -4,6 +4,10 @@ extern crate tokio;
 extern crate tokio_io;
 extern crate futures;
 extern crate bytes;
+extern crate postgres;
+extern crate r2d2;
+extern crate r2d2_postgres;
+extern crate chrono;
 
 use std::sync::{Arc, Mutex};
 use std::env;
@@ -12,16 +16,29 @@ use std::net::SocketAddr;
 use tokio::io::{copy, write_all, shutdown};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
+use r2d2_postgres::{TlsMode, PostgresConnectionManager};
 
 mod net;
 mod codec;
 mod color;
 mod protocol;
+mod db;
 
 use codec::*;
+use db::*;
 
 fn main() {
     env_logger::init();
+
+    info!("Connecting to database");
+    let pool = env::args().nth(3).map(|url| {
+        let manager = PostgresConnectionManager::new(url, TlsMode::None).unwrap();
+        r2d2::Pool::new(manager).unwrap()
+    });
+
+    if pool.is_none() {
+        warn!("No DB connection created. Room data will NOT be saved!");
+    }
 
     let listen_addr = env::args().nth(1).unwrap_or("127.0.0.1:9999".to_string());
     let listen_addr = listen_addr.parse::<SocketAddr>().unwrap();
@@ -30,14 +47,16 @@ fn main() {
     let bat_addr = bat_addr.parse::<SocketAddr>().unwrap();
 
     // Listen for incoming connections.
-    let socket = TcpListener::bind(&listen_addr).unwrap();
     info!("Listening on: {}", listen_addr);
+    let socket = TcpListener::bind(&listen_addr).unwrap();
 
     let done = socket.incoming()
         .map_err(|e| error!("Error accepting socket; error = {}", e))
         .for_each(move |client| {
-            let bat = TcpStream::connect(&bat_addr);
+            let db = pool.clone().map(|p| Db::new(p));
+
             info!("Connecting to: {}", bat_addr);
+            let bat = TcpStream::connect(&bat_addr);
 
             let amounts = bat.and_then(move |bat| {
                 let client_reader = net::ProxyTcpStream(Arc::new(Mutex::new(client)));
@@ -58,7 +77,16 @@ fn main() {
                         match frame {
                             BatFrame::Bytes(bytes) => client_writer_mut.write(&bytes[..]),
                             BatFrame::Code(code) => client_writer_mut.write(&code.to_bytes()[..]),
-                            BatFrame::BatMapper(mapper) => client_writer_mut.write(&mapper.output[..]),
+                            BatFrame::BatMapper(mapper) => {
+                                if db.is_some() && mapper.id.is_some() {
+                                    match db.as_ref().unwrap().save_bat_mapper_room(&mapper) {
+                                        Ok(_) => (),
+                                        Err(e) => error!("failed to save room: {}", e),
+                                    }
+                                }
+
+                                client_writer_mut.write(&mapper.output[..])
+                            },
                             BatFrame::Nothing => client_writer_mut.write(&[][..]),
                         }
                     })

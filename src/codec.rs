@@ -9,7 +9,7 @@ use super::protocol::{ControlCode, BatMapper};
 pub enum BatFrame {
     Bytes(BytesMut),
     Code(Box<ControlCode>),
-    BatMapper(BatMapper),
+    BatMapper(Box<BatMapper>),
     Nothing,
 }
 
@@ -26,6 +26,7 @@ pub struct BatCodec {
     state: State,
     next_index: usize,
     code: Option<Box<ControlCode>>,
+    bat_mapper: Option<Box<BatMapper>>,
 }
 
 impl BatCodec {
@@ -34,6 +35,7 @@ impl BatCodec {
             state: State::Text,
             next_index: 0,
             code: None,
+            bat_mapper: None,
         }
     }
 
@@ -72,7 +74,15 @@ impl BatCodec {
                     },
 
                     None if (c1, c2) == (b'9', b'9') => {
-                        let bat_mapper = BatMapper::new(code.body.split_off(12));
+                        let bat_mapper = Box::new(BatMapper::new(code.body.split_off(12), self.bat_mapper.clone()));
+
+                        if bat_mapper.id.is_none() {
+                            self.bat_mapper = None;
+                        } else {
+                            self.bat_mapper = Some(bat_mapper.clone());
+                        }
+
+                        self.code = None;
                         BatFrame::BatMapper(bat_mapper)
                     },
 
@@ -85,8 +95,7 @@ impl BatCodec {
             },
 
             _ => {
-                warn!("discard unmatching close code {}{} and current code {:?}", c1, c2, self.code);
-                self.code = None;
+                debug!("discard unmatching close code {}{} and current code {:?}", c1, c2, self.code);
                 BatFrame::Nothing
             },
         }
