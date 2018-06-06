@@ -20,6 +20,7 @@ enum State {
     Esc,
     Open(Option<u8>),
     Close(Option<u8>),
+    IAC(Option<u8>),
 }
 
 #[derive(Debug)]
@@ -29,6 +30,7 @@ pub struct BatCodec {
     code: Option<Box<ControlCode>>,
     bat_mapper: Option<Box<BatMapper>>,
     at_line_start: bool,
+    prompt_buf: BytesMut,
 }
 
 impl BatCodec {
@@ -39,10 +41,10 @@ impl BatCodec {
             code: None,
             bat_mapper: None,
             at_line_start: true,
+            prompt_buf: BytesMut::with_capacity(256),
         }
     }
 
-    // invoked on b'\x1b' or b'\n'
     fn process(&mut self, bytes: BytesMut) -> BatFrame {
         let end_with_line_break = bytes.last().map(|&b| b == b'\n');
 
@@ -106,6 +108,13 @@ impl BatCodec {
                         frame
                     },
 
+                    None if (c1, c2) == (b'1', b'0') && &code.attr[..] == b"spec_prompt" => {
+                        self.prompt_buf.clear();
+                        self.prompt_buf.extend(code.body.clone());
+                        self.code = None;
+                        BatFrame::Nothing
+                    },
+
                     None if (c1, c2) == (b'9', b'9') => {
                         let bytes = code.body.split_off(12);
                         let bat_mapper = Box::new(BatMapper::new(bytes, self.bat_mapper.clone()));
@@ -154,12 +163,16 @@ impl Decoder for BatCodec {
         } else {
             match self.state {
                 State::Text => {
-                    if let Some(offset) = buf[self.next_index..].iter().position(|&b| b == b'\x1b' || b == b'\n') {
+                    if let Some(offset) = buf[self.next_index..].iter().position(|&b| b == b'\x1b' || b == b'\xff') {
                         let index = self.next_index + offset;
-                        if buf[index] == b'\n' {
+
+                        if buf[index] == b'\xff' {
                             let mut bytes = buf.split_to(index + 1);
-                            let frame = self.process(bytes);
                             self.next_index = 0;
+                            let len = bytes.len();
+                            bytes.split_off(len - 1);
+                            let frame = self.process(bytes);
+                            self.transition_to(State::IAC(None));
                             Ok(Some(frame))
                         } else {
                             self.next_index = index + 1;
@@ -167,8 +180,8 @@ impl Decoder for BatCodec {
                             Ok(Some(BatFrame::Nothing))
                         }
                     } else {
-                        let frame = self.process(buf.take());
-                        Ok(Some(frame))
+                        self.next_index = buf.len();
+                        Ok(Some(BatFrame::Nothing))
                     }
                 },
 
@@ -281,7 +294,6 @@ impl Decoder for BatCodec {
                             let mut bytes = buf.split_to(self.next_index + 1);
                             self.next_index = 0;
 
-                            // FIXME: handle [255(IAC), 249(GO)] after "[spec_prompt] ..."?
                             let len = bytes.len();
                             bytes.truncate(len - 4);
                             self.process(bytes);
@@ -296,6 +308,51 @@ impl Decoder for BatCodec {
                             Ok(Some(BatFrame::Nothing))
                         },
                     }
+                },
+
+                State::IAC(None) => {
+                    match buf[self.next_index] {
+                        b'\xff' => {
+                            // data byte 255
+                            self.next_index += 1;
+                            self.transition_to(State::Text);
+                            Ok(Some(BatFrame::Nothing))
+                        },
+
+                        b'\xf9' if !self.prompt_buf.is_empty() => {
+                            buf.advance(1);
+                            self.next_index = 0;
+                            self.prompt_buf.extend(&[b'\xff', b'\xf9'][..]);
+                            let bytes = self.prompt_buf.take();
+                            let frame = self.process(bytes);
+                            self.transition_to(State::Text);
+                            Ok(Some(frame))
+                        }
+
+                        c @ b'\xfb' ..= b'\xfe' => {
+                            buf.advance(1);
+                            self.transition_to(State::IAC(Some(c)));
+                            Ok(Some(BatFrame::Nothing))
+                        },
+
+                        c => {
+                            buf.advance(1);
+                            self.next_index = 0;
+                            let bytes = BytesMut::from(&[b'\xff', c][..]);
+                            let frame = self.process(bytes);
+                            self.transition_to(State::Text);
+                            Ok(Some(frame))
+                        },
+                    }
+                },
+
+                State::IAC(Some(c)) => {
+                    let x = buf[self.next_index];
+                    buf.advance(1);
+                    let bytes = BytesMut::from(&[b'\xff', c, x][..]);
+                    let frame = self.process(bytes);
+                    self.transition_to(State::Text);
+                    Ok(Some(frame))
                 },
             }
         }
