@@ -3,13 +3,14 @@ use std::io;
 use bytes::{Bytes, BufMut, BytesMut};
 use tokio_io::codec::{Encoder, Decoder};
 
-use super::protocol::{ControlCode, BatMapper};
+use super::protocol::{ControlCode, BatMapper, Monster};
 
 #[derive(Debug)]
 pub enum BatFrame {
     Bytes(BytesMut),
     Code(Box<ControlCode>),
     BatMapper(Box<BatMapper>),
+    Monster(Box<Monster>),
     Nothing,
 }
 
@@ -53,7 +54,28 @@ impl BatCodec {
             },
 
             None if bytes.len() > 0 => {
-                BatFrame::Bytes(bytes)
+                // plain bytes output
+                // try to match mob names here
+                // color code used here MUST match ansi settings in BatMUD
+                if bytes.starts_with(b"\x1b[31m") {
+                    let monster = Monster::new(
+                        &bytes,
+                        self.bat_mapper.clone().and_then(|x| x.area),
+                        self.bat_mapper.clone().and_then(|x| x.id),
+                        true
+                    );
+                    BatFrame::Monster(Box::new(monster))
+                } else if bytes.starts_with(b"\x1b[32m") {
+                    let monster = Monster::new(
+                        &bytes,
+                        self.bat_mapper.clone().and_then(|x| x.area),
+                        self.bat_mapper.clone().and_then(|x| x.id),
+                        false
+                    );
+                    BatFrame::Monster(Box::new(monster))
+                } else {
+                    BatFrame::Bytes(bytes)
+                }
             },
 
             None => {
@@ -127,17 +149,8 @@ impl Decoder for BatCodec {
     type Error = io::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BatFrame>, io::Error> {
-        if buf.is_empty() {
+        if buf.len() <= self.next_index {
             Ok(None)
-        } else if buf.len() <= self.next_index {
-            match self.state {
-                State::Text => {
-                    let bytes = buf.take();
-                    self.next_index = 0;
-                    Ok(Some(self.process(bytes)))
-                },
-                _ => Ok(None)
-            }
         } else {
             match self.state {
                 State::Text => {

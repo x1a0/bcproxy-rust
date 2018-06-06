@@ -3,7 +3,7 @@ use r2d2_postgres::PostgresConnectionManager;
 use postgres::Error;
 use chrono::prelude::*;
 
-use super::protocol::BatMapper;
+use super::protocol::{BatMapper, Monster};
 
 const QUERY_SAVE_ROOM: &str = "INSERT INTO rooms (id, area, short_desc, long_desc, exits, indoor, created) \
                                VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING";
@@ -11,6 +11,8 @@ const QUERY_SAVE_ROOM: &str = "INSERT INTO rooms (id, area, short_desc, long_des
 const QUERY_SAVE_LINK: &str = "INSERT INTO room_links (source_id, destination_id, exit, created) \
                                VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING";
 
+const QUERY_SAVE_MONSTER: &str = "INSERT INTO monsters (name, area, room_id, aggro, created) \
+                               VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING";
 
 pub struct Db {
     pool: Pool<PostgresConnectionManager>,
@@ -54,6 +56,24 @@ impl Db {
             } else {
                 Ok(())
             }
+        })
+    }
+
+    pub fn save_monster(&self, monster: &Monster) -> Result<(), Error> {
+        let now = Utc::now().naive_utc();
+        let conn = self.pool.get().unwrap();
+
+        let save_monster = conn.prepare_cached(QUERY_SAVE_MONSTER)?;
+        save_monster.execute(
+            &[&monster.name, &monster.area, &monster.room_id, &monster.aggro, &now]
+        ).and_then(|result| {
+            if result == 0 {
+                debug!("monster {:?} at '{:?}' already saved, do nothing", monster.name, monster.area);
+            } else {
+                debug!("monster {:?} at '{:?}' saved", monster.name, monster.area);
+            }
+
+            Ok(())
         })
     }
 }

@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 
-use super::usize_to_chars;
+use super::*;
 
 #[derive(Clone, Debug)]
 pub struct BatMapper {
@@ -24,10 +24,6 @@ enum ParseState {
     ShortDesc,
     LongDesc,
     Exits,
-}
-
-fn latin1_to_string(bytes: &BytesMut) -> String {
-    bytes.iter().map(|&c| c as char).collect()
 }
 
 impl BatMapper {

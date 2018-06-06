@@ -96,6 +96,18 @@ fn main() {
 
                                 client_writer_mut.write(&mapper.output[..])
                             },
+
+                            BatFrame::Monster(monster) => {
+                                if db.is_some() && monster.area.is_some() {
+                                    match db.as_ref().unwrap().save_monster(&monster) {
+                                        Ok(_) => (),
+                                        Err(e) => error!("failed to save monster: {}", e),
+                                    }
+                                }
+
+                                client_writer_mut.write(&monster.output[..])
+                            },
+
                             BatFrame::Nothing => client_writer_mut.write(&[][..]),
                         }
                     })
