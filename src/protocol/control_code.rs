@@ -55,6 +55,10 @@ impl ControlCode {
         }
     }
 
+    pub fn end_with_line_break(&self) -> bool {
+        self.body.ends_with(b"\n")
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut body = self.body.clone();
 
@@ -147,6 +151,10 @@ impl ControlCode {
                 bytes.put(body);
                 bytes.put(b'\n');
                 bytes
+            },
+
+            (b'1', b'0') if &self.attr[..] == b"spec_battle" => {
+                body
             },
 
             (b'1', b'0') if self.attr.starts_with(b"chan_") => {
