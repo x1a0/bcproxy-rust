@@ -163,7 +163,7 @@ impl Decoder for BatCodec {
         } else {
             match self.state {
                 State::Text => {
-                    if let Some(offset) = buf[self.next_index..].iter().position(|&b| b == b'\x1b' || b == b'\xff') {
+                    if let Some(offset) = buf[self.next_index..].iter().position(|&b| b == b'\x1b' || b == b'\xff' || b == b'\n') {
                         let index = self.next_index + offset;
 
                         if buf[index] == b'\xff' {
@@ -173,6 +173,11 @@ impl Decoder for BatCodec {
                             bytes.split_off(len - 1);
                             let frame = self.process(bytes);
                             self.transition_to(State::IAC(None));
+                            Ok(Some(frame))
+                        } else if buf[index] == b'\n' {
+                            let mut bytes = buf.split_to(index + 1);
+                            let frame = self.process(bytes);
+                            self.next_index = 0;
                             Ok(Some(frame))
                         } else {
                             self.next_index = index + 1;
