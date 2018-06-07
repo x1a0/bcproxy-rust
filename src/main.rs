@@ -37,6 +37,7 @@ fn main() {
         (@arg listen: -l --listen +takes_value "address and port to listen on")
         (@arg server: -s --server +takes_value "BatMUD server")
         (@arg db: --db +takes_value "postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]")
+        (@arg monster: --monster ... "Parse and save monster info")
     ).get_matches();
 
     info!("Connecting to database");
@@ -48,6 +49,8 @@ fn main() {
     if pool.is_none() {
         warn!("No DB connection created. Room data will NOT be saved!");
     }
+
+    let parse_monster = matches.is_present("monster");
 
     let listen_addr = matches.value_of("listen").map_or("127.0.0.1:9999".to_string(), &str::to_string);
     let listen_addr = listen_addr.parse::<SocketAddr>().unwrap();
@@ -81,7 +84,7 @@ fn main() {
                     });
 
                 let mut client_writer_mut = client_writer.clone();
-                let bat_to_client = bat_reader.framed(BatCodec::new())
+                let bat_to_client = bat_reader.framed(BatCodec::new(parse_monster))
                     .and_then(move |frame| {
                         match frame {
                             BatFrame::Bytes(bytes) => client_writer_mut.write(&bytes[..]),

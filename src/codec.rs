@@ -31,10 +31,11 @@ pub struct BatCodec {
     bat_mapper: Option<Box<BatMapper>>,
     at_line_start: bool,
     prompt_buf: BytesMut,
+    parse_monster: bool,
 }
 
 impl BatCodec {
-    pub fn new() -> BatCodec {
+    pub fn new(parse_monster: bool) -> BatCodec {
         BatCodec {
             state: State::Text,
             next_index: 0,
@@ -42,6 +43,7 @@ impl BatCodec {
             bat_mapper: None,
             at_line_start: true,
             prompt_buf: BytesMut::with_capacity(256),
+            parse_monster: parse_monster,
         }
     }
 
@@ -55,7 +57,7 @@ impl BatCodec {
                 BatFrame::Nothing
             },
 
-            None if bytes.len() > 0 => {
+            None if bytes.len() > 0 && self.parse_monster => {
                 // plain bytes output
                 // try to match mob names here
                 // color code used here MUST match ansi settings in BatMUD
@@ -79,6 +81,10 @@ impl BatCodec {
                     BatFrame::Bytes(bytes)
                 }
             },
+
+            None if bytes.len() > 0 => {
+                BatFrame::Bytes(bytes)
+            }
 
             None => {
                 BatFrame::Nothing
