@@ -12,6 +12,7 @@ pub struct BatMapper {
     pub is_indoor: Option<bool>,
     pub from_dir: Option<String>,
     pub from_room_id: Option<String>,
+    pub monsters: Vec<Monster>,
     pub output: BytesMut,
 }
 
@@ -27,7 +28,7 @@ enum ParseState {
 }
 
 impl BatMapper {
-    pub fn new(mut input: BytesMut, from_room: Option<Box<BatMapper>>) -> BatMapper {
+    pub fn new(mut input: BytesMut, monsters: Vec<Monster>, from_room: Option<Box<BatMapper>>) -> BatMapper {
         let mut state = ParseState::Area;
         let mut cnt_long_desc_line = 0;
 
@@ -175,6 +176,7 @@ impl BatMapper {
             is_indoor: is_indoor,
             from_dir: from_dir,
             from_room_id: from_room.map(|x| x.id.unwrap()),
+            monsters: monsters,
             output: output,
         }
     }

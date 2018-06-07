@@ -3,7 +3,7 @@ use r2d2_postgres::PostgresConnectionManager;
 use postgres::Error;
 use chrono::prelude::*;
 
-use super::protocol::{BatMapper, Monster};
+use super::protocol::BatMapper;
 
 const QUERY_SAVE_ROOM: &str = "INSERT INTO rooms (id, area, short_desc, long_desc, exits, indoor, created) \
                                VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING";
@@ -42,7 +42,7 @@ impl Db {
             }
 
             if bm.from_room_id.is_some() {
-                save_link.execute(
+                let _ = save_link.execute(
                     &[&bm.from_room_id, &bm.id, &bm.from_dir, &now]
                 ).and_then(|result| {
                     if result == 0 {
@@ -52,25 +52,24 @@ impl Db {
                     }
 
                     Ok(())
-                })
-            } else {
-                Ok(())
+                });
             }
-        })
-    }
 
-    pub fn save_monster(&self, monster: &Monster) -> Result<(), Error> {
-        let now = Utc::now().naive_utc();
-        let conn = self.pool.get().unwrap();
+            if !bm.monsters.is_empty() {
+                let save_monster = conn.prepare_cached(QUERY_SAVE_MONSTER)?;
+                for m in &bm.monsters {
+                    let _ = save_monster.execute(
+                        &[&m.name, &bm.area, &bm.id, &m.aggro, &now]
+                    ).and_then(|result| {
+                        if result == 0 {
+                            debug!("monster {:?} at '{:?}' already saved, do nothing", m.name, bm.area);
+                        } else {
+                            debug!("monster {:?} at '{:?}' saved", m.name, bm.area);
+                        }
 
-        let save_monster = conn.prepare_cached(QUERY_SAVE_MONSTER)?;
-        save_monster.execute(
-            &[&monster.name, &monster.area, &monster.room_id, &monster.aggro, &now]
-        ).and_then(|result| {
-            if result == 0 {
-                debug!("monster {:?} at '{:?}' already saved, do nothing", monster.name, monster.area);
-            } else {
-                debug!("monster {:?} at '{:?}' saved", monster.name, monster.area);
+                        Ok(())
+                    });
+                }
             }
 
             Ok(())

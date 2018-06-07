@@ -10,7 +10,6 @@ pub enum BatFrame {
     Bytes(BytesMut),
     Code(Box<ControlCode>),
     BatMapper(Box<BatMapper>),
-    Monster(Box<Monster>),
     Nothing,
 }
 
@@ -32,6 +31,7 @@ pub struct BatCodec {
     at_line_start: bool,
     prompt_buf: BytesMut,
     parse_monster: bool,
+    monsters_buf: Vec<Monster>,
 }
 
 impl BatCodec {
@@ -44,6 +44,7 @@ impl BatCodec {
             at_line_start: true,
             prompt_buf: BytesMut::with_capacity(256),
             parse_monster: parse_monster,
+            monsters_buf: vec![],
         }
     }
 
@@ -64,19 +65,23 @@ impl BatCodec {
                 if bytes.starts_with(b"\x1b[31m") {
                     let monster = Monster::new(
                         &bytes,
-                        self.bat_mapper.clone().and_then(|x| x.area),
-                        self.bat_mapper.clone().and_then(|x| x.id),
                         true
                     );
-                    BatFrame::Monster(Box::new(monster))
+
+                    let bytes = monster.output.clone();
+                    self.monsters_buf.push(monster);
+                    BatFrame::Bytes(bytes)
+
                 } else if bytes.starts_with(b"\x1b[32m") {
                     let monster = Monster::new(
                         &bytes,
-                        self.bat_mapper.clone().and_then(|x| x.area),
-                        self.bat_mapper.clone().and_then(|x| x.id),
                         false
                     );
-                    BatFrame::Monster(Box::new(monster))
+
+                    let bytes = monster.output.clone();
+                    self.monsters_buf.push(monster);
+                    BatFrame::Bytes(bytes)
+
                 } else {
                     BatFrame::Bytes(bytes)
                 }
@@ -123,7 +128,9 @@ impl BatCodec {
 
                     None if (c1, c2) == (b'9', b'9') => {
                         let bytes = code.body.split_off(12);
-                        let bat_mapper = Box::new(BatMapper::new(bytes, self.bat_mapper.clone()));
+                        let bat_mapper = Box::new(BatMapper::new(bytes, self.monsters_buf.clone(), self.bat_mapper.clone()));
+
+                        self.monsters_buf.clear();
 
                         if bat_mapper.id.is_none() {
                             self.bat_mapper = None;
