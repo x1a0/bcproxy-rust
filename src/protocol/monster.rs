@@ -26,7 +26,7 @@ impl Monster {
 
         let name_len = name.len() - 6;
         Monster {
-            name: latin1_to_string(&name.clone().split_off(6).split_to(name_len - 6)),
+            name: latin1_to_string(&name.clone().split_off(5).split_to(name_len - 6)),
             area: area,
             room_id: room_id,
             aggro: aggro,
