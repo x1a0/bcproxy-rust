@@ -161,6 +161,14 @@ impl ControlCode {
                 body
             },
 
+            (b'1', b'0') if &self.attr[..] == b"spec_skill" => {
+                body
+            },
+
+            (b'1', b'0') if &self.attr[..] == b"spec_spell" => {
+                body
+            },
+
             (b'1', b'0') => {
                 let mut bytes = BytesMut::with_capacity(3 + self.attr.len() + body.len());
                 bytes.put(b'[');
