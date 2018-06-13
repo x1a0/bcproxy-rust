@@ -24,7 +24,7 @@ impl Monster {
 
         let name_len = name.len() - 5;
         Monster {
-            name: latin1_to_string(&name.clone().split_off(5).split_to(name_len - 5)),
+            name: latin1_to_string(&name.clone().split_off(5).split_to(name_len - 6)),
             aggro: aggro,
             output: output,
         }
