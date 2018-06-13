@@ -14,6 +14,7 @@ pub struct BatMapper {
     pub from_room_id: Option<String>,
     pub monsters: Vec<Monster>,
     pub output: BytesMut,
+    pub raw: BytesMut,
 }
 
 #[derive(Debug)]
@@ -40,6 +41,7 @@ impl BatMapper {
         let mut is_indoor = None;
         let mut from_dir = None;
         let mut output = BytesMut::with_capacity(input.len());
+        let mut raw = input.clone();
 
         let mut next_index: usize = 0;
 
@@ -162,10 +164,12 @@ impl BatMapper {
         }
 
         if input.len() > 0 {
-            output.extend(input);
+            output.extend(input.clone());
         }
 
         output.extend(&[b'\n'][..]);
+
+        raw.extend(&[b'@', b'@', b'\n'][..]);
 
         BatMapper {
             area: area,
@@ -178,6 +182,7 @@ impl BatMapper {
             from_room_id: from_room.map(|x| x.id.unwrap()),
             monsters: monsters,
             output: output,
+            raw: raw,
         }
     }
 }

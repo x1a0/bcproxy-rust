@@ -157,6 +157,14 @@ impl ControlCode {
                 body
             },
 
+            (b'1', b'0') if &self.attr[..] == b"spec_skill" => {
+                body
+            },
+
+            (b'1', b'0') if &self.attr[..] == b"spec_spell" => {
+                body
+            },
+
             (b'1', b'0') if self.attr.starts_with(b"chan_") => {
                 body
             },

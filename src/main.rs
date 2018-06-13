@@ -36,8 +36,9 @@ fn main() {
         (version: "0.1")
         (@arg listen: -l --listen +takes_value "address and port to listen on")
         (@arg server: -s --server +takes_value "BatMUD server")
+        (@arg mapper: --mapper +takes_value "address to listen on for mapper")
         (@arg db: --db +takes_value "postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]")
-        (@arg monster: --monster ... "Parse and save monster info")
+        (@arg monster: --monster ... "parse and save monster info")
     ).get_matches();
 
     info!("Connecting to database");
@@ -58,6 +59,9 @@ fn main() {
     let bat_addr = matches.value_of("server").map_or("83.145.249.153:2023".to_string(), &str::to_string);
     let bat_addr = bat_addr.parse::<SocketAddr>().unwrap();
 
+    let mapper_addr = matches.value_of("mapper").map_or("127.0.0.1:0".to_string(), &str::to_string);
+    let mapper_addr = mapper_addr.parse::<SocketAddr>().unwrap();
+
     // Listen for incoming connections.
     info!("Listening on: {}", listen_addr);
     let socket = TcpListener::bind(&listen_addr).unwrap();
@@ -69,6 +73,21 @@ fn main() {
 
             info!("Connecting to: {}", bat_addr);
             let bat = TcpStream::connect(&bat_addr);
+
+            let mapper = TcpListener::bind(&mapper_addr).unwrap();
+            info!("Listening for mapper on: {:?}", mapper.local_addr());
+
+            let mapper_clients: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let mapper_clients_inner = mapper_clients.clone();
+            let mapper_done = mapper.incoming()
+                .map_err(|e| error!("Error accepting mapper; error = {}", e))
+                .for_each(move |mapper_client| {
+                    mapper_clients_inner.lock().unwrap().push(mapper_client);
+                    Ok(())
+                });
+
+            tokio::spawn(mapper_done);
 
             let amounts = bat.and_then(move |bat| {
                 let client_reader = net::ProxyTcpStream(Arc::new(Mutex::new(client)));
@@ -96,6 +115,13 @@ fn main() {
                                         Err(e) => error!("failed to save room: {}", e),
                                     }
                                 }
+
+                                for mut client in mapper_clients.lock().unwrap().iter() {
+                                    match client.write(&mapper.raw[..]) {
+                                        Ok(_) => (),
+                                        Err(e) => error!("failed to write to mapper: {}", e),
+                                    };
+                                };
 
                                 client_writer_mut.write(&mapper.output[..])
                             },
