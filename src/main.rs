@@ -15,7 +15,7 @@ extern crate clap;
 use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
 
-use tokio::io::{copy, write_all, shutdown};
+use tokio::io::{write_all, shutdown};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
 use r2d2_postgres::{TlsMode, PostgresConnectionManager};
@@ -97,8 +97,23 @@ fn main() {
 
                 let bc_mode = write_all(bat_writer.clone(),  [0x1b, b'b', b'c', b' ', b'1', b'\n']);
 
-                let client_to_bat = copy(client_reader, bat_writer)
-                    .and_then(|(n, _, bat_writer)| {
+                let mut bat_writer_inner = bat_writer.clone();
+                let client_to_bat = client_reader.framed(LinesCodec::new())
+                    .and_then(move |frame| {
+                        match frame {
+                            SendFrame::Line(bytes) => bat_writer_inner.write(&bytes[..]),
+                            SendFrame::MonsterExp(name, area, exp) => {
+                                println!("{},{},{}", name, area, exp);
+                                Ok(0)
+                            },
+                            _ => {
+                                error!("failed to parse send frame");
+                                Ok(0)
+                            }
+                        }
+                    })
+                    .fold(0usize, |acc, x| future::ok::<_, tokio::io::Error>(acc + x))
+                    .and_then(move |n| {
                         shutdown(bat_writer).map(move |_| n)
                     });
 

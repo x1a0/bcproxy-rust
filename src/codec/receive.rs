@@ -3,7 +3,7 @@ use std::io;
 use bytes::{Bytes, BufMut, BytesMut};
 use tokio_io::codec::{Encoder, Decoder};
 
-use super::protocol::{ControlCode, BatMapper, Monster};
+use super::super::protocol::{ControlCode, BatMapper, Monster};
 
 #[derive(Debug)]
 pub enum BatFrame {
