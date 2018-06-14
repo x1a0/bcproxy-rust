@@ -11,6 +11,7 @@ extern crate r2d2_postgres;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
+extern crate regex;
 
 use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
@@ -33,13 +34,13 @@ fn main() {
     env_logger::init();
 
     let matches = clap_app!(("BCProxy Rust") =>
-        (version: "0.1")
-        (@arg listen: -l --listen +takes_value "address and port to listen on")
-        (@arg server: -s --server +takes_value "BatMUD server")
-        (@arg mapper: --mapper +takes_value "address to listen on for mapper")
-        (@arg db: --db +takes_value "postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]")
-        (@arg monster: --monster ... "parse and save monster info")
-    ).get_matches();
+                            (version: "0.1")
+                            (@arg listen: -l --listen +takes_value "address and port to listen on")
+                            (@arg server: -s --server +takes_value "BatMUD server")
+                            (@arg mapper: --mapper +takes_value "address to listen on for mapper")
+                            (@arg db: --db +takes_value "postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]")
+                            (@arg monster: --monster ... "parse and save monster info")
+                           ).get_matches();
 
     info!("Connecting to database");
     let pool = matches.value_of("db").map(|url| {
@@ -69,8 +70,6 @@ fn main() {
     let done = socket.incoming()
         .map_err(|e| error!("Error accepting socket; error = {}", e))
         .for_each(move |client| {
-            let db = pool.clone().map(|p| Db::new(p));
-
             info!("Connecting to: {}", bat_addr);
             let bat = TcpStream::connect(&bat_addr);
 
@@ -89,6 +88,9 @@ fn main() {
 
             tokio::spawn(mapper_done);
 
+            let client_to_bat_db = pool.clone().map(|p| Db::new(p));
+            let bat_to_client_db = pool.clone().map(|p| Db::new(p));
+
             let amounts = bat.and_then(move |bat| {
                 let client_reader = net::ProxyTcpStream(Arc::new(Mutex::new(client)));
                 let client_writer = client_reader.clone();
@@ -103,7 +105,13 @@ fn main() {
                         match frame {
                             SendFrame::Line(bytes) => bat_writer_inner.write(&bytes[..]),
                             SendFrame::MonsterExp(name, area, exp) => {
-                                println!("{},{},{}", name, area, exp);
+                                if client_to_bat_db.is_some() {
+                                    match client_to_bat_db.as_ref().unwrap().update_monster_exp(name, area, exp) {
+                                        Ok(_) => (),
+                                        Err(e) => error!("failed to update monster exp: {}", e),
+                                    }
+                                }
+
                                 Ok(0)
                             },
                             _ => {
@@ -112,7 +120,7 @@ fn main() {
                             }
                         }
                     })
-                    .fold(0usize, |acc, x| future::ok::<_, tokio::io::Error>(acc + x))
+                .fold(0usize, |acc, x| future::ok::<_, tokio::io::Error>(acc + x))
                     .and_then(move |n| {
                         shutdown(bat_writer).map(move |_| n)
                     });
@@ -124,8 +132,8 @@ fn main() {
                             BatFrame::Bytes(bytes) => client_writer_mut.write(&bytes[..]),
                             BatFrame::Code(code) => client_writer_mut.write(&code.to_bytes()[..]),
                             BatFrame::BatMapper(mapper) => {
-                                if db.is_some() && mapper.id.is_some() {
-                                    match db.as_ref().unwrap().save_bat_mapper_room(&mapper) {
+                                if bat_to_client_db.is_some() && mapper.id.is_some() {
+                                    match bat_to_client_db.as_ref().unwrap().save_bat_mapper_room(&mapper) {
                                         Ok(_) => (),
                                         Err(e) => error!("failed to save room: {}", e),
                                     }

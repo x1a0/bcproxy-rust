@@ -1,13 +1,14 @@
 use bytes::{BufMut, BytesMut};
 use tokio_io::codec::{Encoder, Decoder};
 use std::io;
+use regex::Regex;
 
 use super::super::protocol::*;
 
 #[derive(Debug)]
 pub enum SendFrame {
     Line(BytesMut),
-    MonsterExp(String, String, String),
+    MonsterExp(String, String, i32),
     Error
 }
 
@@ -23,17 +24,18 @@ impl LinesCodec {
 }
 
 fn process_line(mut bytes: BytesMut) -> SendFrame {
-    if bytes.len() > 15 && &bytes[..15] == b"::monster_exp::" {
-        let mut name = bytes.split_off(15);
+    if bytes.len() > 2 && &bytes[..2] == b";;" {
+        let re = Regex::new(r";;").unwrap();
+        let len = bytes.len() - 2;
+        let s = latin1_to_string(&bytes.split_to(len));
+        let fields: Vec<&str> = re.split(s.as_str()).collect();
 
-        if let Some(i) = name.iter().position(|&x| x == b':') {
-            let mut area = name.split_off(i);
-            if let Some(i) = area.iter().position(|&x| x == b':') {
-                let exp = area.split_off(i);
-                SendFrame::MonsterExp(latin1_to_string(&name), latin1_to_string(&area), latin1_to_string(&exp))
-            } else {
-                SendFrame::Error
-            }
+        if fields[1] == "monster:exp" && fields.len() == 5 {
+            SendFrame::MonsterExp(
+                fields[2].to_string(),
+                fields[3].to_string(),
+                fields[4].to_string().parse::<i32>().unwrap()
+            )
         } else {
             SendFrame::Error
         }
@@ -48,16 +50,17 @@ impl Decoder for LinesCodec {
     type Error = io::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<SendFrame>, io::Error> {
-        println!("{:?}", buf);
         if let Some(newline_offset) =
-            buf[self.next_index..].iter().position(|b| *b == b'\n')
-        {
+            buf[self.next_index..].iter().position(|b| *b == b'\n') {
             let newline_index = newline_offset + self.next_index;
             let line = buf.split_to(newline_index + 1);
             self.next_index = 0;
             Ok(Some(process_line(line)))
+        } else if buf.len() > 0 {
+            let line = buf.take();
+            self.next_index = 0;
+            Ok(Some(process_line(line)))
         } else {
-            self.next_index = buf.len();
             Ok(None)
         }
     }

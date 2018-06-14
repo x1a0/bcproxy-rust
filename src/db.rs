@@ -5,14 +5,25 @@ use chrono::prelude::*;
 
 use super::protocol::BatMapper;
 
-const QUERY_SAVE_ROOM: &str = "INSERT INTO rooms (id, area, short_desc, long_desc, exits, indoor, created) \
-                               VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING";
+const QUERY_SAVE_ROOM: &str =
+"INSERT INTO rooms (id, area, short_desc, long_desc, exits, indoor, created) \
+VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING";
 
-const QUERY_SAVE_LINK: &str = "INSERT INTO room_links (source_id, destination_id, exit, created) \
-                               VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING";
+const QUERY_SAVE_LINK: &str =
+"INSERT INTO room_links (source_id, destination_id, exit, created) \
+VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING";
 
-const QUERY_SAVE_MONSTER: &str = "INSERT INTO monsters (name, area, room_id, aggro, created) \
-                               VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING";
+const QUERY_SAVE_MONSTER: &str =
+"INSERT INTO monsters (name, area, room_id, aggro, created) \
+VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING";
+
+const QUERY_UPDATE_MONSTER_EXP: &str =
+"UPDATE monsters SET \
+exp_min = (CASE WHEN (exp_min IS NULL OR exp_min > $1) THEN $1 ELSE exp_min END), \
+exp_max = (CASE WHEN (exp_max IS NULL OR exp_max < $1) THEN $1 ELSE exp_max END), \
+exp_average = (CASE WHEN kills IS NULL THEN $1 ELSE (exp_average * kills + $1) / (kills + 1) END), \
+kills = (CASE WHEN kills IS NULL THEN 1 ELSE kills + 1 END) \
+WHERE name LIKE $2 AND area = $3";
 
 pub struct Db {
     pool: Pool<PostgresConnectionManager>,
@@ -70,6 +81,25 @@ impl Db {
                         Ok(())
                     });
                 }
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn update_monster_exp(&self, mut name: String, area: String, exp: i32) -> Result<(), Error> {
+        let conn = self.pool.get().unwrap();
+        let update_monster_exp = conn.prepare_cached(QUERY_UPDATE_MONSTER_EXP)?;
+
+        name.push('%');
+
+        update_monster_exp.execute(
+            &[&exp, &name, &area]
+        ).and_then(|result| {
+            if result == 0 {
+                debug!("monster {} in {} exp not updated", name, area);
+            } else {
+                debug!("monster {} in {} has new min/max exp value {}", name, area, exp);
             }
 
             Ok(())

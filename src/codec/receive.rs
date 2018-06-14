@@ -34,6 +34,24 @@ pub struct BatCodec {
     monsters_buf: Vec<Monster>,
 }
 
+fn is_mob(bytes: &BytesMut) -> bool {
+    if bytes.starts_with(b"\x1b[32m") && bytes.ends_with(b"\x1b[0m\r\n") {
+        let len = bytes.len();
+        bytes[5..len - 6].iter().position(|&b| b == b'\x1b').is_none()
+    } else {
+        false
+    }
+}
+
+fn is_aggro_mob(bytes: &BytesMut) -> bool {
+    if bytes.starts_with(b"\x1b[31m") && bytes.ends_with(b"\x1b[0m\r\n") {
+        let len = bytes.len();
+        bytes[5..len - 6].iter().position(|&b| b == b'\x1b').is_none()
+    } else {
+        false
+    }
+}
+
 impl BatCodec {
     pub fn new(parse_monster: bool) -> BatCodec {
         BatCodec {
@@ -62,7 +80,7 @@ impl BatCodec {
                 // plain bytes output
                 // try to match mob names here
                 // color code used here MUST match ansi settings in BatMUD
-                if bytes.starts_with(b"\x1b[31m") {
+                if is_aggro_mob(&bytes) {
                     let monster = Monster::new(
                         &bytes,
                         true
@@ -72,14 +90,20 @@ impl BatCodec {
                     self.monsters_buf.push(monster);
                     BatFrame::Bytes(bytes)
 
-                } else if bytes.starts_with(b"\x1b[32m") {
+                } else if is_mob(&bytes) {
                     let monster = Monster::new(
                         &bytes,
                         false
                     );
 
                     let bytes = monster.output.clone();
-                    self.monsters_buf.push(monster);
+
+                    if let Some(m) = self.bat_mapper.clone() {
+                        if m.area.is_some() {
+                            self.monsters_buf.push(monster);
+                        }
+                    }
+
                     BatFrame::Bytes(bytes)
 
                 } else {
