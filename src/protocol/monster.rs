@@ -10,17 +10,20 @@ pub struct Monster {
 impl Monster {
     pub fn new(name: &BytesMut, aggro: bool) -> Monster {
 
-        let output = if aggro {
-            let mut bytes = BytesMut::with_capacity(16 + name.len());
-            bytes.put(&b"[monster:aggro] "[..]);
-            bytes.put(&name[..]);
-            bytes
-        } else {
-            let mut bytes = BytesMut::with_capacity(11 + name.len());
-            bytes.put(&b"[monster] "[..]);
-            bytes.put(&name[..]);
-            bytes
-        };
+        //let output = if aggro {
+        //    let mut bytes = BytesMut::with_capacity(16 + name.len());
+        //    bytes.put(&b"[monster:aggro] "[..]);
+        //    bytes.put(&name[..]);
+        //    bytes
+        //} else {
+        //    let mut bytes = BytesMut::with_capacity(11 + name.len());
+        //    bytes.put(&b"[monster] "[..]);
+        //    bytes.put(&name[..]);
+        //    bytes
+        //};
+
+        let mut output = BytesMut::with_capacity(name.len());
+        output.put(&name[..]);
 
         let name_len = name.len() - 5;
         Monster {
