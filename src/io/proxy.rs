@@ -1,14 +1,13 @@
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use futures::{ready, Stream, Sink};
+use std::{
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 
-use std::future::Future;
-use std::io;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite};
 
+const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
-#[derive(Debug)]
-struct ProxyBuffer {
+pub(super) struct ProxyBuffer {
     read_done: bool,
     need_flush: bool,
     pos: usize,
@@ -18,23 +17,23 @@ struct ProxyBuffer {
 }
 
 impl ProxyBuffer {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             read_done: false,
             need_flush: false,
             pos: 0,
             cap: 0,
             amt: 0,
-            buf: vec![0; super::DEFAULT_BUF_SIZE].into_boxed_slice(),
+            buf: vec![0; DEFAULT_BUF_SIZE].into_boxed_slice(),
         }
     }
 
-    fn poll_copy<R, W>(
+    pub(super) fn poll_copy<R, W>(
         &mut self,
         cx: &mut Context<'_>,
         mut reader: Pin<&mut R>,
         mut writer: Pin<&mut W>,
-    ) -> Poll<io::Result<u64>>
+    ) -> Poll<std::io::Result<u64>>
     where
         R: AsyncRead + ?Sized,
         W: AsyncWrite + ?Sized,
@@ -43,40 +42,28 @@ impl ProxyBuffer {
             // If our buffer is empty, then we need to read some data to
             // continue.
             if self.pos == self.cap && !self.read_done {
-                let me = &mut *self;
-                let mut buf = ReadBuf::new(&mut me.buf);
+                self.pos = 0;
+                self.cap = 0;
 
-                match reader.as_mut().poll_read(cx, &mut buf) {
-                    Poll::Ready(Ok(_)) => (),
-                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                match self.poll_fill_buf(cx, reader.as_mut()) {
+                    Poll::Ready(Ok(())) => {}
                     Poll::Pending => {
-                        // Try flushing when the reader has no progress to avoid deadlock
-                        // when the reader depends on buffered writer.
                         if self.need_flush {
                             ready!(writer.as_mut().poll_flush(cx))?;
                             self.need_flush = false;
                         }
-
                         return Poll::Pending;
                     }
-                }
-
-                let n = buf.filled().len();
-                if n == 0 {
-                    self.read_done = true;
-                } else {
-                    self.pos = 0;
-                    self.cap = n;
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 }
             }
 
             // If our buffer has some data, let's write it out!
             while self.pos < self.cap {
-                let me = &mut *self;
-                let i = ready!(writer.as_mut().poll_write(cx, &me.buf[me.pos..me.cap]))?;
+                let i = ready!(self.poll_write_buf(cx, reader.as_mut(), writer.as_mut()))?;
                 if i == 0 {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
                         "write zero byte into writer",
                     )));
                 } else {
@@ -102,41 +89,49 @@ impl ProxyBuffer {
             }
         }
     }
-}
 
-/// A future that asynchronously proxies the entire contents of a reader into a
-/// writer.
-#[derive(Debug)]
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct Proxy<'a, R: ?Sized, W: ?Sized> {
-    reader: &'a mut R,
-    writer: &'a mut W,
-    buf: ProxyBuffer,
-}
-
-pub async fn proxy<'a, R, W>(reader: &'a mut R, writer: &'a mut W) -> io::Result<u64>
-where
-    R: Stream + Unpin + ?Sized,
-    W: Sink<String> + Unpin + ?Sized,
-{
-    Proxy {
-        reader,
-        writer,
-        buf: ProxyBuffer::new()
-    }.await
-}
-
-impl<R, W> Future for Proxy<'_, R, W>
-where
-    R: Stream + Unpin + ?Sized,
-    W: Sink<String> + Unpin + ?Sized,
-{
-    type Output = io::Result<u64>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+    fn poll_fill_buf<R>(
+        &mut self,
+        cx: &mut Context<'_>,
+        reader: Pin<&mut R>,
+    ) -> Poll<std::io::Result<()>>
+    where
+        R: AsyncRead + ?Sized,
+    {
         let me = &mut *self;
+        let mut buf = tokio::io::ReadBuf::new(&mut me.buf);
+        buf.set_filled(me.cap);
 
-        me.buf
-            .poll_copy(cx, Pin::new(&mut *me.reader), Pin::new(&mut *me.writer))
+        let res = reader.poll_read(cx, &mut buf);
+        if let Poll::Ready(Ok(())) = res {
+            let filled_len = buf.filled().len();
+            me.read_done = me.cap == filled_len;
+            me.cap = filled_len;
+        }
+        res
+    }
+
+    fn poll_write_buf<R, W>(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut reader: Pin<&mut R>,
+        mut writer: Pin<&mut W>,
+    ) -> Poll<std::io::Result<usize>>
+    where
+        R: AsyncRead + ?Sized,
+        W: AsyncWrite + ?Sized,
+    {
+        let me = &mut *self;
+        match writer.as_mut().poll_write(cx, &me.buf[me.pos..me.cap]) {
+            Poll::Pending => {
+                // Top up the buffer towards full if we can read a bit more
+                // data - this should improve the chances of a large write
+                if !me.read_done && me.cap < me.buf.len() {
+                    ready!(me.poll_fill_buf(cx, reader.as_mut()))?;
+                }
+                Poll::Pending
+            }
+            res => res,
+        }
     }
 }
