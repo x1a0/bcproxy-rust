@@ -3,11 +3,10 @@ use tokio::net::tcp::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::{io::AsyncWriteExt, net::tcp::ReadHalf};
 use tokio_stream::StreamExt as _;
-use tokio_util::codec::{BytesCodec, FramedRead, LinesCodec};
+use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod codec;
 mod color;
-mod io;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
