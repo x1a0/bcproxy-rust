@@ -1,3 +1,4 @@
+use codec::{BatMudCodec, BatMudFrame};
 use tokio::net::tcp::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::{io::AsyncWriteExt, net::tcp::ReadHalf};
@@ -5,6 +6,7 @@ use tokio_stream::StreamExt as _;
 use tokio_util::codec::{BytesCodec, FramedRead, LinesCodec};
 
 mod codec;
+mod color;
 mod io;
 
 #[tokio::main]
@@ -63,13 +65,25 @@ async fn server_to_client<'a>(
     reader: ReadHalf<'a>,
     mut writer: WriteHalf<'a>,
 ) -> Result<(), std::io::Error> {
-    let mut transport = FramedRead::new(reader, BytesCodec::new());
+    let mut transport = FramedRead::new(reader, BatMudCodec::new());
 
-    while let Some(line) = transport.next().await {
-        match line {
-            Ok(line) => {
+    while let Some(frame) = transport.next().await {
+        match frame {
+            Ok(BatMudFrame::Text(line)) => {
                 writer.write_all(&line).await?;
             }
+
+            Ok(BatMudFrame::Code(control_code)) => {
+                let bytes = control_code.to_bytes();
+                writer.write_all(&bytes).await?;
+                tracing::debug!(
+                    "proxying control code as: {}",
+                    String::from_utf8(bytes).unwrap()
+                );
+            }
+
+            Ok(BatMudFrame::Continue) => {}
+
             Err(e) => {
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
             }
