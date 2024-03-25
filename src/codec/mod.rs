@@ -1,5 +1,8 @@
-use bytes::{BufMut, BytesMut};
-use std::io;
+use bytes::BytesMut;
+use std::{
+    fmt::{self, Display, Formatter},
+    io,
+};
 use tokio_util::codec::Decoder;
 
 use self::control_code::ControlCode;
@@ -102,12 +105,12 @@ impl BatMudCodec {
                         // concatenate the rest of the buffer back to `buf`
                         buf.extend(rest);
 
-                        tracing::error!(
+                        tracing::debug!(
                             "Closing code {}{} is not the current opening code {}. This closing tag will be discarded.",
                             closing.0 as char, closing.1 as char,
                             opening.map(|(a, b)| format!("{}{}", a as char, b as char)).unwrap_or_else(|| "None".to_string()),
                         );
-                        tracing::error!("Discarded bytes: {:?}", discarded);
+                        tracing::debug!("Discarded bytes: {:?}", discarded);
 
                         self.next_index = 0;
                         self.state = BatMudCodecState::Text;
@@ -143,7 +146,18 @@ impl Decoder for BatMudCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
-        tracing::debug!("decoding (-> {}): {:?}", self.next_index, src);
+        tracing::debug!(
+            "decoding {} [{}/{}]: {:?}",
+            self.state,
+            self.next_index,
+            src.len(),
+            src
+        );
+
+        if src.is_empty() {
+            return Ok(None);
+        }
+
         match self.state {
             BatMudCodecState::Text => self.decode_text(src),
             BatMudCodecState::Esc => self.decode_esc(src),
@@ -154,6 +168,15 @@ impl Decoder for BatMudCodec {
 enum BatMudCodecState {
     Text,
     Esc,
+}
+
+impl Display for BatMudCodecState {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            BatMudCodecState::Text => write!(f, "[TXT]"),
+            BatMudCodecState::Esc => write!(f, "[ESC]"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +306,20 @@ mod tests {
         assert_eq!(
             frames[0],
             BatMudFrame::Text(b"The beginning\x1b[0m.\r\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn decode_channel_message() {
+        let frames = decode_buf!(&b"\x1b<10chan_newbie\x1b|\x1b[1;33mNyriori the Helper [newbie]: oh, well fair\x1b[0m\r\n\x1b>10"[..]);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            frames[0],
+            BatMudFrame::Code(
+                ControlCode::from(
+                    b"\x1b<10chan_newbie\x1b|\x1b[1;33mNyriori the Helper [newbie]: oh, well fair\x1b[0m\r\n\x1b>10"[..].into()
+                ).unwrap()
+            )
         );
     }
 }
