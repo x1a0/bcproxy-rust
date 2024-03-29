@@ -7,7 +7,7 @@ use tokio_util::codec::Decoder;
 
 use self::control_code::ControlCode;
 
-mod control_code;
+pub(crate) mod control_code;
 
 const IAC: u8 = 0xff;
 
@@ -40,9 +40,13 @@ impl BatMudCodec {
 
         match break_offset {
             Some(offset) if buf[self.next_index + offset] == IAC => {
-                let line = buf.split_to(self.next_index + offset + 2);
-                self.next_index = 0;
-                Ok(Some(BatMudFrame::Text(line.to_vec())))
+                if self.next_index + offset + 1 < buf.len() {
+                    let line = buf.split_to(self.next_index + offset + 2);
+                    self.next_index = 0;
+                    Ok(Some(BatMudFrame::Text(line.to_vec())))
+                } else {
+                    Ok(None)
+                }
             }
 
             Some(offset) if buf[self.next_index + offset] == b'\x1b' => {

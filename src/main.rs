@@ -1,30 +1,50 @@
+use bytes::Bytes;
 use codec::{BatMudCodec, BatMudFrame};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Pool, Postgres};
 use tokio::net::tcp::WriteHalf;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::{io::AsyncWriteExt, net::tcp::ReadHalf};
 use tokio_stream::StreamExt as _;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
+use crate::codec::control_code::mapper::Mapper;
+
 mod codec;
 mod color;
+
+enum DbMessage {
+    Mapper(Mapper),
+}
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     tracing_subscriber::fmt::init();
 
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect("postgresql://batmud:batmud@localhost:52345/batmud")
+        .await
+        .expect("could not connect to database");
+
+    let (tx, rx) = mpsc::channel::<DbMessage>(64);
+    tokio::spawn(handle_db_message(rx, pool));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7788").await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
+        let tx = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = process(stream).await {
+            if let Err(e) = process(stream, tx).await {
                 tracing::error!("an error occurred; error = {:?}", e);
             }
         });
     }
 }
 
-async fn process(mut client: TcpStream) -> Result<(), std::io::Error> {
+async fn process(mut client: TcpStream, tx: Sender<DbMessage>) -> Result<(), std::io::Error> {
     let mut server = TcpStream::connect("batmud.bat.org:2023").await?;
     let bc_mode = "\x1bbc 1\n".as_bytes();
     server.write_all(bc_mode).await?;
@@ -32,8 +52,8 @@ async fn process(mut client: TcpStream) -> Result<(), std::io::Error> {
     let (client_reader, client_writer) = client.split();
     let (server_reader, server_writer) = server.split();
 
-    let server_to_client = server_to_client(server_reader, client_writer);
-    let client_to_server = client_to_server(client_reader, server_writer);
+    let server_to_client = server_to_client(server_reader, client_writer, &tx);
+    let client_to_server = client_to_server(client_reader, server_writer, &tx);
 
     tokio::try_join!(server_to_client, client_to_server)?;
 
@@ -43,6 +63,7 @@ async fn process(mut client: TcpStream) -> Result<(), std::io::Error> {
 async fn client_to_server<'a>(
     reader: ReadHalf<'a>,
     mut writer: WriteHalf<'a>,
+    tx: &Sender<DbMessage>,
 ) -> Result<(), std::io::Error> {
     let mut transport = FramedRead::new(reader, BytesCodec::new());
 
@@ -63,6 +84,7 @@ async fn client_to_server<'a>(
 async fn server_to_client<'a>(
     reader: ReadHalf<'a>,
     mut writer: WriteHalf<'a>,
+    tx: &Sender<DbMessage>,
 ) -> Result<(), std::io::Error> {
     let mut transport = FramedRead::new(reader, BatMudCodec::new());
 
@@ -74,11 +96,18 @@ async fn server_to_client<'a>(
 
             Ok(BatMudFrame::Code(control_code)) => {
                 let bytes = control_code.to_bytes();
+
+                if control_code.is_mapper() {
+                    let mapper: Mapper =
+                        Mapper::try_from(control_code.get_children_bytes().as_slice())?;
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(DbMessage::Mapper(mapper)).await;
+                    });
+                }
+
                 writer.write_all(&bytes).await?;
-                tracing::debug!(
-                    "proxying control code as: {}",
-                    String::from_utf8(bytes).unwrap()
-                );
+                tracing::debug!("proxying control code as: {:?}", Bytes::from(bytes));
             }
 
             Ok(BatMudFrame::Continue) => {}
@@ -88,6 +117,53 @@ async fn server_to_client<'a>(
             }
         }
     }
+
+    Ok(())
+}
+
+async fn handle_db_message(
+    mut rx: Receiver<DbMessage>,
+    pool: Pool<Postgres>,
+) -> Result<(), std::io::Error> {
+    while let Some(message) = rx.recv().await {
+        match message {
+            DbMessage::Mapper(mapper) => {
+                match upsert_room(pool.clone(), mapper).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!("could not upsert room: {:?}", e);
+                    }
+                };
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn upsert_room(pool: Pool<Postgres>, mapper: Mapper) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r##"
+                INSERT INTO rooms (
+                    id,
+                    area,
+                    name,
+                    description,
+                    indoor,
+                    exits,
+                    from_dir
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO NOTHING"##,
+    )
+    .bind(mapper.room_id)
+    .bind(mapper.area_name)
+    .bind(mapper.room_name)
+    .bind(mapper.room_description)
+    .bind(mapper.indoor)
+    .bind(mapper.exits)
+    .bind(mapper.from)
+    .execute(&pool)
+    .await?;
 
     Ok(())
 }

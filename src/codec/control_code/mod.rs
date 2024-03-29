@@ -2,6 +2,7 @@ use std::io;
 
 use bytes::BytesMut;
 
+pub(crate) mod mapper;
 mod transform;
 
 #[derive(Debug, PartialEq)]

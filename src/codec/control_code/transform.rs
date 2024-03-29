@@ -54,11 +54,12 @@ macro_rules! embed_style {
 }
 
 macro_rules! embed_info_type {
-    ($info_type:expr, $children_bytes:expr) => {{
+    ($c1:expr, $c2:expr, $children_bytes:expr) => {{
         let mut bytes = Vec::with_capacity($children_bytes.len() + PREFIX.len() + 20);
         bytes.extend(PREFIX);
-        bytes.extend($info_type);
-        bytes.extend(b": ");
+        bytes.push($c1);
+        bytes.push($c2);
+        bytes.push(b':');
         bytes.extend($children_bytes);
         bytes.push(b'\n');
         bytes
@@ -66,15 +67,18 @@ macro_rules! embed_info_type {
 }
 
 impl ControlCode {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let children_bytes: Vec<u8> = self
-            .children
+    pub fn get_children_bytes(&self) -> Vec<u8> {
+        self.children
             .iter()
             .flat_map(|c| match c {
                 ControlCodeContent::Text(bytes) => bytes.clone(),
                 ControlCodeContent::Code(c) => c.to_bytes(),
             })
-            .collect();
+            .collect()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let children_bytes = self.get_children_bytes();
 
         match self.code {
             TEXT_COLOR_FOREGROUND => {
@@ -118,52 +122,11 @@ impl ControlCode {
                 bytes
             }
 
-            PLAYER_FULL_HP_SP_EP => {
-                embed_info_type!(b"player_full", children_bytes)
-            }
-
-            PLAYER_PARTIAL_HP_SP_EP => {
-                embed_info_type!(b"player_partial", children_bytes)
-            }
-
-            PLAYER_INFO => {
-                embed_info_type!(b"player_info", children_bytes)
-            }
-
-            PLAYER_FREE_EXP => {
-                embed_info_type!(b"player_free_exp", children_bytes)
-            }
-
-            PLAYER_STATUS => {
-                embed_info_type!(b"player_status", children_bytes)
-            }
-
-            PLAYER_LOCATION => {
-                embed_info_type!(b"player_location", children_bytes)
-            }
-
-            STATUS_AFFECTING => {
-                embed_info_type!(b"status_affecting", children_bytes)
-            }
-
-            PARTY_LOCATION => {
-                embed_info_type!(b"party_location", children_bytes)
-            }
-
-            PARTY_FULL_STATUS => {
-                embed_info_type!(b"party_full_status", children_bytes)
-            }
-
-            PARTY_PLAYER_LEFT => {
-                embed_info_type!(b"party_player_left", children_bytes)
-            }
-
-            TARGET_INFO => {
-                embed_info_type!(b"target_info", children_bytes)
-            }
-
             MESSAGE_OF_TYPE if self.attribute == MESSAGE_TYPE_SPEC_PROMPT => {
-                let mut bytes = Vec::with_capacity(children_bytes.len() + IAC_GA.len());
+                let mut bytes =
+                    Vec::with_capacity(PREFIX.len() + 1 + children_bytes.len() + IAC_GA.len());
+                bytes.extend(PREFIX);
+                bytes.push(b'>');
                 bytes.extend(children_bytes);
                 bytes.extend(IAC_GA);
                 bytes
@@ -174,11 +137,63 @@ impl ControlCode {
                 let mut bytes = Vec::with_capacity(
                     (PREFIX.len() + self.attribute.len() + 2) * lines.len() + children_bytes.len(),
                 );
-                for line in lines {
+                for line in &lines[0..lines.len() - 1] {
                     bytes.extend(PREFIX);
                     bytes.extend(&self.attribute);
                     bytes.extend(b": ");
-                    bytes.extend(line);
+                    bytes.extend(*line);
+                    bytes.push(b'\n');
+                }
+                bytes
+            }
+
+            CLEAR_SCREEN => b"\x1b[2J".to_vec(),
+
+            PLAYER_FULL_HP_SP_EP
+            | PLAYER_PARTIAL_HP_SP_EP
+            | PLAYER_INFO
+            | PLAYER_FREE_EXP
+            | PLAYER_STATUS
+            | PLAYER_LOCATION
+            | STATUS_AFFECTING
+            | PARTY_LOCATION
+            | PARTY_FULL_STATUS
+            | PARTY_PLAYER_LEFT
+            | TARGET_INFO => {
+                embed_info_type!(self.code.0, self.code.1, children_bytes)
+            }
+
+            CUSTOM_INFO => {
+                let mut seen = 0;
+                let mut next_index = 0;
+                while seen < 6 {
+                    let index = children_bytes[next_index..]
+                        .iter()
+                        .position(|b| *b == b';')
+                        .unwrap_or(children_bytes.len());
+                    if children_bytes[next_index + index + 1] == b';' {
+                        seen += 1;
+                    }
+                    next_index = next_index + index + 2;
+                }
+                let (metadata, content) = children_bytes.split_at(next_index);
+                let lines = content.split(|b| *b == b'\n').collect::<Vec<_>>();
+                let mut bytes =
+                    Vec::with_capacity((PREFIX.len() + 4) * lines.len() + children_bytes.len());
+
+                bytes.extend(PREFIX);
+                bytes.push(self.code.0);
+                bytes.push(self.code.1);
+                bytes.extend(b":");
+                bytes.extend(metadata);
+                bytes.push(b'\n');
+
+                for line in &lines[0..lines.len() - 1] {
+                    bytes.extend(PREFIX);
+                    bytes.push(self.code.0);
+                    bytes.push(self.code.1);
+                    bytes.extend(b":");
+                    bytes.extend(*line);
                     bytes.push(b'\n');
                 }
                 bytes
@@ -186,5 +201,9 @@ impl ControlCode {
 
             (_, _) => children_bytes,
         }
+    }
+
+    pub fn is_mapper(&self) -> bool {
+        self.code == CUSTOM_INFO
     }
 }
