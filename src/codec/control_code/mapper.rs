@@ -1,20 +1,23 @@
 use bytes::Bytes;
 
-pub(crate) struct Mapper {
-    pub room_id: String,
-    pub room_name: String,
-    pub area_name: String,
-    pub room_description: String,
-    pub indoor: bool,
-    pub exits: String,
-    pub from: String,
+#[derive(Debug, PartialEq)]
+pub(crate) enum Mapper {
+    Area {
+        room_id: String,
+        room_name: String,
+        area_name: String,
+        room_description: String,
+        indoor: bool,
+        exits: String,
+        from: String,
+    },
+    Realm,
 }
 
 impl TryFrom<&[u8]> for Mapper {
     type Error = std::io::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        // BAT_MAPPER;;area;;id;;from_dir;;indoor;;room_short;;room_long;;exits;;
         let mut field_index = 0;
 
         let mut room_id = String::new();
@@ -41,6 +44,9 @@ impl TryFrom<&[u8]> for Mapper {
                         .map_err(map_ut8_error)?;
                     next_index += index + 2;
                     field_index += 1;
+                }
+                (1, None) => {
+                    return Ok(Self::Realm);
                 }
                 (2, Some(index)) => {
                     room_id = String::from_utf8(value[next_index..next_index + index].to_vec())
@@ -88,7 +94,7 @@ impl TryFrom<&[u8]> for Mapper {
             }
         }
 
-        Ok(Self {
+        Ok(Self::Area {
             room_id,
             room_name,
             area_name,
@@ -109,17 +115,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mapper_try_from() {
+    fn test_try_from_area() {
         let input =
             &b"BAT_MAPPER;;area;;room_id;;from;;1;;room_short;;room_long\nanother line;;exits;;"[..];
         let mapper = Mapper::try_from(input).unwrap();
 
-        assert_eq!(mapper.area_name, "area");
-        assert_eq!(mapper.room_id, "room_id");
-        assert_eq!(mapper.from, "from");
-        assert!(mapper.indoor);
-        assert_eq!(mapper.room_name, "room_short");
-        assert_eq!(mapper.room_description, "room_long\nanother line");
-        assert_eq!(mapper.exits, "exits");
+        assert_eq!(
+            mapper,
+            Mapper::Area {
+                room_id: "room_id".to_string(),
+                room_name: "room_short".to_string(),
+                area_name: "area".to_string(),
+                room_description: "room_long\nanother line".to_string(),
+                indoor: true,
+                exits: "exits".to_string(),
+                from: "from".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_from_realm() {
+        let input = &b"BAT_MAPPER;;REALM_MAP"[..];
+        let mapper = Mapper::try_from(input).unwrap();
+
+        assert_eq!(mapper, Mapper::Realm);
     }
 }

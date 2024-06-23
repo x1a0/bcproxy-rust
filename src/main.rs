@@ -31,7 +31,14 @@ async fn main() -> Result<(), std::io::Error> {
     let (tx, rx) = mpsc::channel::<DbMessage>(64);
     tokio::spawn(handle_db_message(rx, pool));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:7788").await?;
+    let port = std::env::vars()
+        .find(|(key, _)| key == "BCP_PORT")
+        .map(|(_, value)| value)
+        .unwrap_or("7788".to_string());
+
+    tracing::info!("Starting BCP server on port {}", port);
+
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -45,7 +52,14 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 async fn process(mut client: TcpStream, tx: Sender<DbMessage>) -> Result<(), std::io::Error> {
-    let mut server = TcpStream::connect("batmud.bat.org:2023").await?;
+    let remote_addr = std::env::vars()
+        .find(|(key, _)| key == "REMOTE_ADDR")
+        .map(|(_, value)| value)
+        .unwrap_or("batmud.bat.org:2023".to_string());
+
+    tracing::info!("Connecting to remote server at {}", remote_addr);
+
+    let mut server = TcpStream::connect(remote_addr).await?;
     let bc_mode = "\x1bbc 1\n".as_bytes();
     server.write_all(bc_mode).await?;
 
@@ -142,8 +156,18 @@ async fn handle_db_message(
 }
 
 async fn upsert_room(pool: Pool<Postgres>, mapper: Mapper) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r##"
+    if let Mapper::Area {
+        room_id,
+        room_name,
+        area_name,
+        room_description,
+        indoor,
+        exits,
+        from,
+    } = mapper
+    {
+        sqlx::query(
+            r##"
                 INSERT INTO rooms (
                     id,
                     area,
@@ -154,16 +178,17 @@ async fn upsert_room(pool: Pool<Postgres>, mapper: Mapper) -> Result<(), sqlx::E
                     from_dir
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (id) DO NOTHING"##,
-    )
-    .bind(mapper.room_id)
-    .bind(mapper.area_name)
-    .bind(mapper.room_name)
-    .bind(mapper.room_description)
-    .bind(mapper.indoor)
-    .bind(mapper.exits)
-    .bind(mapper.from)
-    .execute(&pool)
-    .await?;
+        )
+        .bind(room_id)
+        .bind(area_name)
+        .bind(room_name)
+        .bind(room_description)
+        .bind(indoor)
+        .bind(exits)
+        .bind(from)
+        .execute(&pool)
+        .await?;
+    }
 
     Ok(())
 }

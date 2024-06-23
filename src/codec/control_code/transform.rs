@@ -12,6 +12,12 @@ const MESSAGE_OF_TYPE: (u8, u8) = (b'1', b'0');
 const MESSAGE_TYPE_SPEC_PROMPT: [u8; 11] = [
     b's', b'p', b'e', b'c', b'_', b'p', b'r', b'o', b'm', b'p', b't',
 ];
+// spec_skill
+const MESSAGE_TYPE_SPEC_SKILL: [u8; 10] =
+    [b's', b'p', b'e', b'c', b'_', b's', b'k', b'i', b'l', b'l'];
+// spec_spell
+const MESSAGE_TYPE_SPEC_SPELL: [u8; 10] =
+    [b's', b'p', b'e', b'c', b'_', b's', b'p', b'e', b'l', b'l'];
 
 const CLEAR_SCREEN: (u8, u8) = (b'1', b'1');
 
@@ -132,6 +138,13 @@ impl ControlCode {
                 bytes
             }
 
+            MESSAGE_OF_TYPE
+                if self.attribute == MESSAGE_TYPE_SPEC_SKILL
+                    || self.attribute == MESSAGE_TYPE_SPEC_SPELL =>
+            {
+                children_bytes
+            }
+
             MESSAGE_OF_TYPE => {
                 let lines = children_bytes.split(|b| *b == b'\n').collect::<Vec<_>>();
                 let mut bytes = Vec::with_capacity(
@@ -147,7 +160,7 @@ impl ControlCode {
                 bytes
             }
 
-            CLEAR_SCREEN => b"\x1b[2J".to_vec(),
+            CLEAR_SCREEN => b"<clear>\n".to_vec(),
 
             PLAYER_FULL_HP_SP_EP
             | PLAYER_PARTIAL_HP_SP_EP
@@ -164,46 +177,141 @@ impl ControlCode {
             }
 
             CUSTOM_INFO => {
-                let mut seen = 0;
+                // \x1b<99BAT_MAPPER;;friday (player city);;$apr1$dF!!_X#W$ENKn9g1ViErH4mjKkn4qR/;;west;;0;;(road) Friday;;\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[37m%\x1b[0m+     \r\n\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m#\x1b[0m\x1b[36mI\x1b[0m+   \r\n\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[31mG\x1b[0m*+   \r\n\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m#\x1b[0m\x1b[1;33mH\x1b[0m+   \r\n\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[1;33mH\x1b[0m+   \r\n;;north,northeast,east,southeast,south,west;;\x1b>99\x1b
+                let mut fields: Vec<&[u8]> = Vec::with_capacity(8);
                 let mut next_index = 0;
-                while seen < 6 {
-                    let index = children_bytes[next_index..]
-                        .iter()
-                        .position(|b| *b == b';')
-                        .unwrap_or(children_bytes.len());
-                    if children_bytes[next_index + index + 1] == b';' {
-                        seen += 1;
+                let mut read_index = 0;
+
+                while let Some(index) = children_bytes[next_index..].iter().position(|b| *b == b';')
+                {
+                    if next_index + index < children_bytes.len() - 1
+                        && children_bytes[next_index + index + 1] == b';'
+                    {
+                        fields.push(&children_bytes[read_index..next_index + index]);
+                        next_index += index + 2;
+                        read_index = next_index;
+                    } else {
+                        next_index += index + 1;
                     }
-                    next_index = next_index + index + 2;
                 }
-                let (metadata, content) = children_bytes.split_at(next_index);
-                let lines = content.split(|b| *b == b'\n').collect::<Vec<_>>();
-                let mut bytes =
-                    Vec::with_capacity((PREFIX.len() + 4) * lines.len() + children_bytes.len());
 
-                bytes.extend(PREFIX);
-                bytes.push(self.code.0);
-                bytes.push(self.code.1);
-                bytes.extend(b":");
-                bytes.extend(metadata);
-                bytes.push(b'\n');
-
-                for line in &lines[0..lines.len() - 1] {
-                    bytes.extend(PREFIX);
-                    bytes.push(self.code.0);
-                    bytes.push(self.code.1);
-                    bytes.extend(b":");
-                    bytes.extend(*line);
-                    bytes.push(b'\n');
+                if next_index < children_bytes.len() {
+                    fields.push(&children_bytes[next_index..]);
                 }
-                bytes
+
+                match fields.len() {
+                    8 => {
+                        let lines = fields[6].split(|b| *b == b'\n').collect::<Vec<_>>();
+                        let mut bytes = Vec::with_capacity(
+                            (PREFIX.len() + 4) * lines.len() + children_bytes.len(),
+                        );
+                        bytes.extend(PREFIX);
+                        bytes.push(self.code.0);
+                        bytes.push(self.code.1);
+                        bytes.extend(b":");
+                        fields.iter().take(6).for_each(|f| {
+                            bytes.extend(&f[..]);
+                            bytes.extend(b";;");
+                        });
+                        bytes.extend(fields[7]);
+                        bytes.extend(b";;");
+                        bytes.push(b'\n');
+
+                        for line in &lines[0..std::cmp::max(lines.len() - 1, 1)] {
+                            bytes.extend(PREFIX);
+                            bytes.push(self.code.0);
+                            bytes.push(self.code.1);
+                            bytes.extend(b":");
+                            bytes.extend(*line);
+                            bytes.push(b'\n');
+                        }
+
+                        bytes
+                    }
+
+                    2 => {
+                        let mut bytes = Vec::with_capacity(PREFIX.len() + 4 + children_bytes.len());
+                        bytes.extend(PREFIX);
+                        bytes.push(self.code.0);
+                        bytes.push(self.code.1);
+                        bytes.extend(b":");
+                        bytes.extend(fields[1]);
+                        bytes.push(b'\n');
+
+                        bytes
+                    }
+                    _ => {
+                        tracing::error!("cannot transform mapper with fields: {:?}", fields);
+                        vec![]
+                    }
+                }
             }
 
-            (_, _) => children_bytes,
+            TEXT_HYPERLINK | TEXT_IN_GAME_LINK => children_bytes,
+
+            (_, _) => embed_info_type!(self.code.0, self.code.1, children_bytes),
         }
     }
 
     pub fn is_mapper(&self) -> bool {
         self.code == CUSTOM_INFO
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    use super::*;
+
+    #[test]
+    fn test_transform_mapper_area() {
+        let bytes = BytesMut::from(
+            &b"\x1b<99BAT_MAPPER;;area;;id;;from;;0;;short;;long;;exits;;\x1b>99"[..],
+        );
+        let control_code = ControlCode::from(bytes).unwrap();
+
+        let mut expected: Vec<u8> = Vec::new();
+        expected.extend(PREFIX);
+        expected.extend(b"99:BAT_MAPPER;;area;;id;;from;;0;;short;;exits;;\n");
+        expected.extend(PREFIX);
+        expected.extend(b"99:long\n");
+
+        assert_eq!(control_code.to_bytes(), expected);
+    }
+
+    #[test]
+    fn test_transform_mapper_realm() {
+        let bytes = BytesMut::from(&b"\x1b<99BAT_MAPPER;;REALM_MAP\x1b>99"[..]);
+        let control_code = ControlCode::from(bytes).unwrap();
+
+        let mut expected: Vec<u8> = Vec::new();
+        expected.extend(PREFIX);
+        expected.extend(b"99:BAT_MAPPER;;REALM_MAP\n");
+
+        assert_eq!(control_code.to_bytes(), expected);
+    }
+
+    #[test]
+    fn test_friday() {
+        let bytes = BytesMut::from(&b"\x1b<99BAT_MAPPER;;friday (player city);;$apr1$dF!!_X#W$ENKn9g1ViErH4mjKkn4qR/;;north;;0;;(road) Friday;;\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[37m%\x1b[0m+     \r\n\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m#\x1b[0m\x1b[36mI\x1b[0m+   \r\n\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[31mG\x1b[0m*+   \r\n\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m#\x1b[0m\x1b[1;33mH\x1b[0m+   \r\n\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[1;33mH\x1b[0m+   \r\n;;north,northeast,east,southeast,south,west;;\x1b>99"[..]);
+        let control_code = ControlCode::from(bytes).unwrap();
+
+        let mut expected = BytesMut::new();
+        expected.extend(PREFIX);
+        expected.extend(b"99:BAT_MAPPER;;friday (player city);;$apr1$dF!!_X#W$ENKn9g1ViErH4mjKkn4qR/;;north;;0;;(road) Friday;;north,northeast,east,southeast,south,west;;\n");
+        expected.extend(PREFIX);
+        expected.extend(b"99:\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[37m%\x1b[0m+     \r\n");
+        expected.extend(PREFIX);
+        expected.extend(b"99:\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m#\x1b[0m\x1b[36mI\x1b[0m+   \r\n");
+        expected.extend(PREFIX);
+        expected.extend(
+            b"99:\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[31mG\x1b[0m*+   \r\n",
+        );
+        expected.extend(PREFIX);
+        expected.extend(b"99:\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m.\x1b[0m\x1b[37m#\x1b[0m\x1b[1;33mH\x1b[0m+   \r\n");
+        expected.extend(PREFIX);
+        expected.extend(b"99:\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[32mc\x1b[0m\x1b[1;33mH\x1b[0m+   \r\n");
+        assert_eq!(BytesMut::from(&control_code.to_bytes()[..]), expected);
     }
 }
