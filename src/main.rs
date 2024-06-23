@@ -22,9 +22,40 @@ enum DbMessage {
 async fn main() -> Result<(), std::io::Error> {
     tracing_subscriber::fmt::init();
 
+    let db_address = std::env::vars()
+        .find(|(key, _)| key == "BCP_DB_HOST")
+        .map(|(_, value)| value)
+        .unwrap_or("localhost".to_string());
+
+    let db_port = std::env::vars()
+        .find(|(key, _)| key == "BCP_DB_PORT")
+        .map(|(_, value)| value)
+        .unwrap_or("5432".to_string());
+
+    let db_user = std::env::vars()
+        .find(|(key, _)| key == "BCP_DB_USER")
+        .map(|(_, value)| value)
+        .unwrap_or("batmud".to_string());
+
+    let db_password = std::env::vars()
+        .find(|(key, _)| key == "BCP_DB_PASSWORD")
+        .map(|(_, value)| value)
+        .unwrap_or("batmud".to_string());
+
+    let db_name = std::env::vars()
+        .find(|(key, _)| key == "BCP_DB_NAME")
+        .map(|(_, value)| value)
+        .unwrap_or("batmud".to_string());
+
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect("postgresql://batmud:batmud@localhost:52345/batmud")
+        .connect(
+            format!(
+                "postgresql://{}:{}@{}:{}/{}",
+                db_user, db_password, db_address, db_port, db_name
+            )
+            .as_str(),
+        )
         .await
         .expect("could not connect to database");
 
