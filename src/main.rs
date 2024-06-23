@@ -62,6 +62,10 @@ async fn main() -> Result<(), std::io::Error> {
     let (tx, rx) = mpsc::channel::<DbMessage>(64);
     tokio::spawn(handle_db_message(rx, pool));
 
+    let host = std::env::vars()
+        .find(|(key, _)| key == "BCP_HOST")
+        .map(|(_, value)| value)
+        .unwrap_or("127.0.0.1".to_string());
     let port = std::env::vars()
         .find(|(key, _)| key == "BCP_PORT")
         .map(|(_, value)| value)
@@ -69,7 +73,7 @@ async fn main() -> Result<(), std::io::Error> {
 
     tracing::info!("Starting BCP server on port {}", port);
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
