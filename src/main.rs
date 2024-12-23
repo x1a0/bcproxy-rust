@@ -114,7 +114,7 @@ async fn client_to_server<'a>(
     mut writer: WriteHalf<'a>,
     tx: &Sender<DbMessage>,
 ) -> Result<(), std::io::Error> {
-    let mut transport = FramedRead::new(reader, BytesCodec::new());
+    let mut transport = FramedRead::with_capacity(reader, BytesCodec::new(), 16 * 1024);
 
     while let Some(line) = transport.next().await {
         match line {
@@ -135,7 +135,7 @@ async fn server_to_client<'a>(
     mut writer: WriteHalf<'a>,
     tx: &Sender<DbMessage>,
 ) -> Result<(), std::io::Error> {
-    let mut transport = FramedRead::new(reader, BatMudCodec::new());
+    let mut transport = FramedRead::with_capacity(reader, BatMudCodec::new(), 16 * 1024);
 
     while let Some(frame) = transport.next().await {
         match frame {

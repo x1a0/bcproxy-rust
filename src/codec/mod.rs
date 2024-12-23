@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use bytes::{BufMut as _, BytesMut};
 use std::{
     fmt::{self, Display, Formatter},
     io,
@@ -162,10 +162,14 @@ impl Decoder for BatMudCodec {
             return Ok(None);
         }
 
-        match self.state {
+        let f = match self.state {
             BatMudCodecState::Text => self.decode_text(src),
             BatMudCodecState::Esc => self.decode_esc(src),
-        }
+        };
+
+        tracing::debug!("decoded: {:?}", f);
+
+        f
     }
 }
 

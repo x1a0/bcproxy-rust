@@ -40,8 +40,8 @@ impl TryFrom<&[u8]> for Mapper {
                     field_index += 1;
                 }
                 (1, Some(index)) => {
-                    area_name = String::from_utf8(value[next_index..next_index + index].to_vec())
-                        .map_err(map_ut8_error)?;
+                    area_name =
+                        String::from_utf8_lossy(&value[next_index..next_index + index]).to_string();
                     next_index += index + 2;
                     field_index += 1;
                 }
@@ -49,14 +49,14 @@ impl TryFrom<&[u8]> for Mapper {
                     return Ok(Self::Realm);
                 }
                 (2, Some(index)) => {
-                    room_id = String::from_utf8(value[next_index..next_index + index].to_vec())
-                        .map_err(map_ut8_error)?;
+                    room_id =
+                        String::from_utf8_lossy(&value[next_index..next_index + index]).to_string();
                     next_index += index + 2;
                     field_index += 1;
                 }
                 (3, Some(index)) => {
-                    from = String::from_utf8(value[next_index..next_index + index].to_vec())
-                        .map_err(map_ut8_error)?;
+                    from =
+                        String::from_utf8_lossy(&value[next_index..next_index + index]).to_string();
                     next_index += index + 2;
                     field_index += 1;
                 }
@@ -66,21 +66,20 @@ impl TryFrom<&[u8]> for Mapper {
                     field_index += 1;
                 }
                 (5, Some(index)) => {
-                    room_name = String::from_utf8(value[next_index..next_index + index].to_vec())
-                        .map_err(map_ut8_error)?;
+                    room_name =
+                        String::from_utf8_lossy(&value[next_index..next_index + index]).to_string();
                     next_index += index + 2;
                     field_index += 1;
                 }
                 (6, Some(index)) => {
                     room_description =
-                        String::from_utf8(value[next_index..next_index + index].to_vec())
-                            .map_err(map_ut8_error)?;
+                        String::from_utf8_lossy(&value[next_index..next_index + index]).to_string();
                     next_index += index + 2;
                     field_index += 1;
                 }
                 (7, Some(index)) => {
-                    exits = String::from_utf8(value[next_index..next_index + index].to_vec())
-                        .map_err(map_ut8_error)?;
+                    exits =
+                        String::from_utf8_lossy(&value[next_index..next_index + index]).to_string();
                     break;
                 }
 
